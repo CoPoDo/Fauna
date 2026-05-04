@@ -1842,6 +1842,31 @@ textarea.fld-in { resize: vertical; min-height: 60px; }
 .exif-strip .k { color: var(--green); font-weight: 500; }
 .exif-strip .v { color: var(--text); }
 
+.exif-map {
+  width: 100%;
+  height: 160px;
+  border-radius: 12px;
+  border: 1px solid rgba(52,211,153,0.2);
+  margin-bottom: 12px;
+  overflow: hidden;
+  cursor: pointer;
+  position: relative;
+}
+.exif-map::after {
+  content: 'tap to adjust';
+  position: absolute;
+  bottom: 8px; right: 10px;
+  background: rgba(10,14,10,0.78);
+  color: var(--green);
+  font: 500 10px/1 'IBM Plex Mono', monospace;
+  letter-spacing: 0.05em;
+  padding: 5px 8px;
+  border-radius: 6px;
+  pointer-events: none;
+  z-index: 500;
+  border: 1px solid rgba(52,211,153,0.25);
+}
+
 /* ========== Identification status ========== */
 .id-status {
   padding: 12px 14px;
@@ -3188,6 +3213,7 @@ body:has(#vS.active) .fab { display: none; }
     <input type="file" id="photoInputCam" accept="image/*" capture="environment" style="display:none">
 
     <div class="exif-strip" id="exifStrip" style="display:none"></div>
+    <div class="exif-map" id="exifMap" style="display:none" aria-label="Photo location preview"></div>
     <div class="id-status" id="idStatus" style="display:none"></div>
 
     <div class="fld-row">
@@ -3785,54 +3811,116 @@ function findExistingSpecies(ai) {
 }
 
 // ===== EXIF =====
-async function extractExif(file) {
-  const out = { at: null, lat: null, lng: null };
-  // Wait briefly for exifr if still loading (defer script can race with early picks)
-  if (!window.exifr) {
-    await new Promise(res => setTimeout(res, 120));
+async function waitForExifr(timeoutMs = 5000) {
+  if (window.exifr) return true;
+  const start = Date.now();
+  while (!window.exifr && Date.now() - start < timeoutMs) {
+    await new Promise(r => setTimeout(r, 50));
   }
-  if (!window.exifr) return out;
+  return !!window.exifr;
+}
+async function extractExif(file) {
+  const out = { at: null, lat: null, lng: null, make: null, model: null, hasExif: false, isHeic: false };
+  // Detect HEIC/HEIF — exifr can't parse these in a browser without an extra
+  // decoder. We still try, but flag it so the UI can warn the user.
+  const name = (file.name || '').toLowerCase();
+  const type = (file.type || '').toLowerCase();
+  if (/\.hei[cf]$/.test(name) || type === 'image/heic' || type === 'image/heif') {
+    out.isHeic = true;
+  }
+  const ready = await waitForExifr(5000);
+  if (!ready) {
+    console.warn('[EXIF] exifr library never loaded');
+    if (file.lastModified) out.at = file.lastModified;
+    return out;
+  }
+  // Strategy 1: structured parse with all relevant segments. No `pick` —
+  // it can drop derived latitude/longitude on some files.
+  let data = null;
   try {
-    const data = await window.exifr.parse(file, {
-      gps: true,
-      tiff: true,
-      ifd0: true,
-      exif: true,
-      xmp: true,
-      iptc: true,
-      translateKeys: true,
-      reviveValues: true,
-      pick: [
-        'DateTimeOriginal','CreateDate','ModifyDate','DateTime','DateTimeDigitized',
-        'GPSLatitude','GPSLongitude','GPSLatitudeRef','GPSLongitudeRef',
-        'latitude','longitude'
-      ]
+    data = await window.exifr.parse(file, {
+      gps: true, tiff: true, ifd0: true, exif: true, xmp: true, iptc: true,
+      mergeOutput: true, translateKeys: true, translateValues: true, reviveValues: true,
     });
-    if (data) {
-      const dateCandidate = data.DateTimeOriginal || data.CreateDate || data.DateTimeDigitized || data.DateTime || data.ModifyDate;
-      if (dateCandidate) {
-        const t = dateCandidate instanceof Date ? dateCandidate.getTime() : new Date(dateCandidate).getTime();
-        if (Number.isFinite(t)) out.at = t;
+  } catch (e) {
+    console.warn('[EXIF] structured parse failed:', e && e.message);
+  }
+  // Strategy 2: if parse returned nothing, try the dead-simple form
+  if (!data) {
+    try { data = await window.exifr.parse(file, true); }
+    catch (e) { console.warn('[EXIF] simple parse failed:', e && e.message); }
+  }
+  if (data) {
+    out.hasExif = true;
+    out.make = data.Make || null;
+    out.model = data.Model || null;
+    // ----- Date -----
+    // Try the named EXIF date tags in order of preference. Pixel + most
+    // cameras populate DateTimeOriginal; some only DateTime (TIFF root).
+    const dateCandidate = data.DateTimeOriginal || data.CreateDate
+      || data.DateTimeDigitized || data.DateTime || data.ModifyDate;
+    if (dateCandidate) {
+      const t = dateCandidate instanceof Date ? dateCandidate.getTime() : new Date(dateCandidate).getTime();
+      if (Number.isFinite(t) && t > 0) out.at = t;
+    }
+    // Fallback: synthesise from GPSDateStamp + GPSTimeStamp (UTC) — useful
+    // when DateTimeOriginal is missing or wrong (e.g. clock unset).
+    if (!out.at && data.GPSDateStamp) {
+      const ds = String(data.GPSDateStamp).replace(/:/g, '-');
+      const ts = data.GPSTimeStamp;
+      let timeStr = '00:00:00';
+      if (Array.isArray(ts) && ts.length >= 3) {
+        timeStr = `${String(Math.floor(ts[0])).padStart(2,'0')}:${String(Math.floor(ts[1])).padStart(2,'0')}:${String(Math.floor(ts[2])).padStart(2,'0')}`;
+      } else if (typeof ts === 'string') {
+        timeStr = ts;
       }
-      // exifr normally returns translated `latitude`/`longitude`; fall back to raw GPS arrays
-      if (Number.isFinite(data.latitude) && Number.isFinite(data.longitude)) {
-        out.lat = data.latitude;
-        out.lng = data.longitude;
-      } else if (Array.isArray(data.GPSLatitude) && Array.isArray(data.GPSLongitude)) {
-        const toDec = (dms, ref) => {
-          if (!dms || dms.length < 3) return null;
-          let v = dms[0] + dms[1] / 60 + dms[2] / 3600;
-          if (ref === 'S' || ref === 'W') v = -v;
-          return v;
-        };
-        const lat = toDec(data.GPSLatitude, data.GPSLatitudeRef);
-        const lng = toDec(data.GPSLongitude, data.GPSLongitudeRef);
-        if (Number.isFinite(lat) && Number.isFinite(lng)) { out.lat = lat; out.lng = lng; }
+      const t = new Date(`${ds}T${timeStr}Z`).getTime();
+      if (Number.isFinite(t) && t > 0) out.at = t;
+    }
+    // ----- GPS -----
+    // exifr normally returns translated `latitude`/`longitude`. Fall back
+    // to raw DMS arrays. Pixels may also use `GPSPosition` in XMP.
+    if (Number.isFinite(data.latitude) && Number.isFinite(data.longitude)) {
+      out.lat = data.latitude;
+      out.lng = data.longitude;
+    } else if (Array.isArray(data.GPSLatitude) && Array.isArray(data.GPSLongitude)) {
+      const toDec = (dms, ref) => {
+        if (!dms || dms.length < 3) return null;
+        let v = Number(dms[0]) + Number(dms[1]) / 60 + Number(dms[2]) / 3600;
+        if (ref === 'S' || ref === 'W') v = -v;
+        return v;
+      };
+      const lat = toDec(data.GPSLatitude, data.GPSLatitudeRef);
+      const lng = toDec(data.GPSLongitude, data.GPSLongitudeRef);
+      if (Number.isFinite(lat) && Number.isFinite(lng)) { out.lat = lat; out.lng = lng; }
+    } else if (typeof data.GPSPosition === 'string') {
+      // Format: "13.7563, 100.5018" (XMP convention)
+      const m = data.GPSPosition.match(/(-?\d+(?:\.\d+)?)[,\s]+(-?\d+(?:\.\d+)?)/);
+      if (m) {
+        const a = parseFloat(m[1]), b = parseFloat(m[2]);
+        if (Number.isFinite(a) && Number.isFinite(b)) { out.lat = a; out.lng = b; }
       }
     }
-  } catch (e) { console.warn('EXIF parse failed', e); }
-  // Fallback to file.lastModified for date
+  }
+  // Strategy 3: dedicated GPS-only call — sometimes succeeds when full
+  // parse misses GPS (e.g. unusual EXIF layout, Motion Photo trailers).
+  if (!Number.isFinite(out.lat) && typeof window.exifr.gps === 'function') {
+    try {
+      const gps = await window.exifr.gps(file);
+      if (gps && Number.isFinite(gps.latitude) && Number.isFinite(gps.longitude)) {
+        out.lat = gps.latitude;
+        out.lng = gps.longitude;
+      }
+    } catch (e) { /* ignore */ }
+  }
+  // Reject obviously bogus coordinates.
+  if (Number.isFinite(out.lat) && Number.isFinite(out.lng)) {
+    if (Math.abs(out.lat) < 0.0001 && Math.abs(out.lng) < 0.0001) { out.lat = null; out.lng = null; }
+    else if (Math.abs(out.lat) > 90 || Math.abs(out.lng) > 180) { out.lat = null; out.lng = null; }
+  }
+  // Fallback to file.lastModified for date when EXIF didn't have one
   if (!out.at && file.lastModified) out.at = file.lastModified;
+  console.log('[EXIF]', { name: file.name, type: file.type, size: file.size, ...out });
   return out;
 }
 
@@ -4058,10 +4146,12 @@ async function handlePhotoPick(file) {
 }
 
 async function applyExifToDraft(exif) {
+  let appliedDate = false, appliedGps = false, placeLabel = '';
   // Date
   if (exif.at && (!$('#inWhen').value || $('#inWhen').dataset.auto === '1')) {
     $('#inWhen').value = toLocalDT(new Date(exif.at));
     $('#inWhen').dataset.auto = '1';
+    appliedDate = true;
   }
   // Location
   if (Number.isFinite(exif.lat) && Number.isFinite(exif.lng) && (!$('#inLoc').value || $('#inLoc').dataset.auto === '1')) {
@@ -4072,33 +4162,104 @@ async function applyExifToDraft(exif) {
       $('#inLoc').value = [loc.city, loc.country].filter(Boolean).join(', ');
       $('#inLoc').dataset.auto = '1';
       $('#locStatus').textContent = '(from photo)';
+      placeLabel = [loc.city, loc.country].filter(Boolean).join(', ');
     } else {
       S.draft.location = { lat: exif.lat, lng: exif.lng, cc: '', country: '', city: '' };
       $('#inLoc').value = exif.lat.toFixed(4) + ', ' + exif.lng.toFixed(4);
+      $('#inLoc').dataset.auto = '1';
       $('#locStatus').textContent = '(from photo)';
+      placeLabel = exif.lat.toFixed(3) + ', ' + exif.lng.toFixed(3);
     }
-  } else if (exif.at || (exif.lat != null)) {
-    // Show EXIF strip
+    appliedGps = true;
   }
   updateExifStrip();
   updateSaveState();
+  // User-visible feedback so they know auto-fill worked
+  if (appliedDate && appliedGps) {
+    const dateStr = new Date(exif.at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    toast(`📍 ${placeLabel} · ${dateStr}`);
+    vibrate(8);
+  } else if (appliedGps) {
+    toast(`📍 Location from photo: ${placeLabel}`);
+    vibrate(8);
+  } else if (appliedDate) {
+    const dateStr = new Date(exif.at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    toast(`📅 Photo date: ${dateStr} — tap "Pin on map" to add location`);
+  } else if (exif.isHeic && !exif.lat) {
+    toast('⚠️ HEIC format — convert to JPEG for auto-location, or tap "Pin on map"');
+  } else if (!exif.lat && exif.hasExif) {
+    toast('ℹ️ Photo has no GPS data — tap "Pin on map" to add location');
+  } else if (!exif.hasExif) {
+    toast('ℹ️ No metadata in photo — set time and location manually');
+  }
 }
 
+let _exifMapInstance = null, _exifMapMarker = null;
+function teardownExifMap() {
+  const mapEl = $('#exifMap');
+  if (mapEl) mapEl.style.display = 'none';
+  if (_exifMapInstance) {
+    try { _exifMapInstance.remove(); } catch (e) {}
+    _exifMapInstance = null;
+    _exifMapMarker = null;
+  }
+}
 function updateExifStrip() {
   const strip = $('#exifStrip');
-  if (!S.draftPhotos.length || !S.draftPhotos[0].exif) { strip.style.display = 'none'; return; }
+  if (!S.draftPhotos.length || !S.draftPhotos[0].exif) {
+    strip.style.display = 'none';
+    teardownExifMap();
+    return;
+  }
   const e = S.draftPhotos[0].exif;
   const parts = [];
-  if (e.at) parts.push(`<span><span class="k">Taken</span> <span class="v">${new Date(e.at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</span></span>`);
+  if (e.at) {
+    const d = new Date(e.at);
+    const dateStr = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    const timeStr = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    parts.push(`<span><span class="k">Taken</span> <span class="v">${dateStr}, ${timeStr}</span></span>`);
+  }
+  if (e.model) {
+    parts.push(`<span><span class="k">Camera</span> <span class="v">${e.model}</span></span>`);
+  }
   if (Number.isFinite(e.lat) && Number.isFinite(e.lng)) {
-    parts.push(`<span><span class="k">GPS</span> <span class="v">${e.lat.toFixed(3)}, ${e.lng.toFixed(3)}</span></span>`);
+    parts.push(`<span><span class="k">GPS</span> <span class="v">${e.lat.toFixed(4)}, ${e.lng.toFixed(4)}</span></span>`);
+  } else if (e.isHeic) {
+    parts.push(`<span style="color:var(--gold)"><span class="k" style="color:var(--gold)">HEIC</span> <span class="v" style="color:var(--dim)">unsupported metadata format — tap "Pin on map" below</span></span>`);
   } else {
-    // Photo has no GPS — warn user
     parts.push(`<span style="color:var(--gold)"><span class="k" style="color:var(--gold)">No GPS</span> <span class="v" style="color:var(--dim)">photo has no location — tap "Pin on map" below</span></span>`);
   }
-  if (!parts.length) { strip.style.display = 'none'; return; }
   strip.style.display = 'flex';
   strip.innerHTML = `<span style="color:var(--green)">📷 photo metadata</span>` + parts.join('');
+  // Map preview when GPS is present
+  const mapEl = $('#exifMap');
+  if (Number.isFinite(e.lat) && Number.isFinite(e.lng) && mapEl && typeof L !== 'undefined') {
+    mapEl.style.display = 'block';
+    if (!_exifMapInstance) {
+      _exifMapInstance = L.map(mapEl, {
+        zoomControl: false, attributionControl: false,
+        dragging: false, scrollWheelZoom: false, doubleClickZoom: false,
+        boxZoom: false, keyboard: false, tap: false, touchZoom: false,
+      }).setView([e.lat, e.lng], 13);
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 19, subdomains: 'abcd' }).addTo(_exifMapInstance);
+      // Tapping the preview opens the full pin sheet so user can adjust
+      mapEl.addEventListener('click', () => { const b = $('#pinMapBtn'); if (b) b.click(); });
+    } else {
+      _exifMapInstance.setView([e.lat, e.lng], 13);
+    }
+    if (_exifMapMarker) {
+      try { _exifMapInstance.removeLayer(_exifMapMarker); } catch (er) {}
+      _exifMapMarker = null;
+    }
+    const icon = L.divIcon({
+      html: `<div class="fmkr" style="color:var(--green)"><div class="fmkr-dot" style="box-shadow:0 0 0 3px rgba(52,211,153,0.3),0 0 20px var(--green)">📍</div></div>`,
+      className: 'fmkr-wrap', iconSize: [44, 44], iconAnchor: [22, 22]
+    });
+    _exifMapMarker = L.marker([e.lat, e.lng], { icon }).addTo(_exifMapInstance);
+    setTimeout(() => { try { _exifMapInstance.invalidateSize(); } catch (er) {} }, 60);
+  } else {
+    teardownExifMap();
+  }
 }
 
 function isNetworkError(err) {
@@ -4302,6 +4463,9 @@ function closeAddSheet() {
   S.draftPhotos = [];
   S.draft = null;
   setIdStatus(null);
+  // Tear down the EXIF preview map so it can be re-created cleanly next time
+  teardownExifMap();
+  $('#exifStrip').style.display = 'none';
 }
 
 function updateSaveState() {
