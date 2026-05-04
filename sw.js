@@ -16,6 +16,7 @@ self.addEventListener('fetch', event => {
 });
 
 async function handleShare(request) {
+  const baseUrl = new URL('./', self.location).toString();
   try {
     const formData = await request.formData();
     const files = formData.getAll('photos').filter(f => f && typeof f === 'object' && f.size > 0);
@@ -32,8 +33,8 @@ async function handleShare(request) {
       });
       await cache.put(`/share-cache/${i}`, new Response(file, { headers }));
     }
-    return Response.redirect(`./?shared=${files.length}`, 303);
+    return Response.redirect(`${baseUrl}?shared=${files.length}`, 303);
   } catch (err) {
-    return Response.redirect(`./?shared=error&msg=${encodeURIComponent(err.message || 'unknown')}`, 303);
+    return Response.redirect(`${baseUrl}?shared=error&msg=${encodeURIComponent(err.message || 'unknown')}`, 303);
   }
 }

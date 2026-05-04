@@ -1873,6 +1873,71 @@ textarea.fld-in { resize: vertical; min-height: 60px; }
 .exif-debug-modal pre .val { color: var(--text); }
 .exif-debug-modal pre .hi { color: var(--gold); }
 
+/* ========== Share / install tip ========== */
+.share-tip {
+  display: flex; align-items: center; gap: 10px;
+  background: linear-gradient(145deg, rgba(212,165,116,0.06), rgba(212,165,116,0.02));
+  border: 1px solid rgba(212,165,116,0.18);
+  border-radius: 12px; padding: 10px 12px; margin-bottom: 12px;
+  font-size: 12px; color: var(--dim); cursor: pointer;
+  -webkit-user-select: none; user-select: none;
+}
+.share-tip:active { background: linear-gradient(145deg, rgba(212,165,116,0.1), rgba(212,165,116,0.04)); }
+.share-tip-icon { font-size: 18px; line-height: 1; flex-shrink: 0; }
+.share-tip-body { flex: 1; min-width: 0; }
+.share-tip-title { color: var(--gold); font-weight: 500; font-size: 12px; margin-bottom: 2px; letter-spacing: 0.02em; }
+.share-tip-desc { color: var(--dim); font-size: 11px; line-height: 1.45; }
+.share-tip-cta {
+  background: var(--gold); color: var(--bg); border: 0;
+  border-radius: 8px; padding: 8px 12px; font-size: 11px;
+  font-weight: 600; cursor: pointer; white-space: nowrap;
+  font-family: inherit; letter-spacing: 0.04em;
+}
+.share-tip-cta.ghost { background: transparent; color: var(--gold); border: 1px solid var(--gold); }
+
+.share-help-modal {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 10000;
+  display: none; align-items: flex-end; padding: 0;
+}
+.share-help-modal.open { display: flex; }
+.share-help-modal .panel {
+  background: var(--bg-card); border-top: 1px solid var(--border);
+  border-radius: 20px 20px 0 0;
+  max-height: 88vh; width: 100%;
+  display: flex; flex-direction: column; overflow: hidden;
+  padding: 8px 0 max(env(safe-area-inset-bottom), 16px);
+}
+.share-help-modal .grip { width: 40px; height: 4px; background: var(--border); border-radius: 2px; margin: 8px auto 4px; }
+.share-help-modal .scroll { overflow: auto; padding: 12px 22px 0; }
+.share-help-modal h3 {
+  font-family: 'Fraunces', serif; font-weight: 500;
+  font-size: 22px; color: var(--text); margin: 8px 0 4px;
+}
+.share-help-modal h3 em { color: var(--green); font-style: italic; }
+.share-help-modal h4 {
+  font-size: 11px; color: var(--green); margin: 18px 0 6px;
+  letter-spacing: 0.12em; text-transform: uppercase; font-weight: 500;
+}
+.share-help-modal p { color: var(--dim); font-size: 13px; line-height: 1.55; margin: 0 0 10px; }
+.share-help-modal ol { margin: 0; padding-left: 22px; color: var(--text); font-size: 13px; line-height: 1.7; }
+.share-help-modal ol li { margin-bottom: 6px; }
+.share-help-modal ol li b { color: var(--green); font-weight: 500; }
+.share-help-modal .why {
+  background: rgba(212,165,116,0.08); border: 1px solid rgba(212,165,116,0.18);
+  border-radius: 10px; padding: 10px 12px; margin: 6px 0 8px;
+  color: var(--gold); font-size: 12px; line-height: 1.5;
+}
+.share-help-modal .actions { padding: 12px 22px; display: flex; gap: 8px; }
+.share-help-modal .actions button {
+  flex: 1; background: var(--green); color: var(--bg);
+  border: 0; border-radius: 10px; padding: 12px 14px;
+  font-family: inherit; font-weight: 600; font-size: 13px;
+  letter-spacing: 0.04em; cursor: pointer;
+}
+.share-help-modal .actions button.ghost {
+  background: transparent; color: var(--text); border: 1px solid var(--border);
+}
+
 .exif-map {
   width: 100%;
   height: 160px;
@@ -3244,6 +3309,15 @@ body:has(#vS.active) .fab { display: none; }
     <input type="file" id="photoInputCam" accept="image/*" capture="environment" style="display:none">
     <input type="file" id="photoInputFiles" accept="*/*" multiple style="display:none">
 
+    <div class="share-tip" id="shareTip" style="display:none">
+      <div class="share-tip-icon">📍</div>
+      <div class="share-tip-body">
+        <div class="share-tip-title" id="shareTipTitle">Auto-location for old photos</div>
+        <div class="share-tip-desc" id="shareTipDesc">Android strips GPS from picked photos. Share from Google Photos instead — tap for how.</div>
+      </div>
+      <button class="share-tip-cta" id="shareTipCta" type="button">How</button>
+    </div>
+
     <div class="exif-strip" id="exifStrip" style="display:none" title="Tap and hold to view raw EXIF data"></div>
     <div class="exif-map" id="exifMap" style="display:none" aria-label="Photo location preview"></div>
     <div class="exif-debug-modal" id="exifDebugModal">
@@ -3540,6 +3614,36 @@ body:has(#vS.active) .fab { display: none; }
   </div>
 </div>
 
+<div class="share-help-modal" id="shareHelpModal" aria-hidden="true">
+  <div class="panel">
+    <div class="grip"></div>
+    <div class="scroll">
+      <h3>Why your photos lose <em>GPS</em></h3>
+      <div class="why">
+        Android 13+ strips location data from any photo your apps pick from the gallery — including web apps like this. The photo still has GPS in Google Photos, but the version handed to Fauna doesn't. There's no fix from inside the app: the bytes simply arrive without coordinates.
+      </div>
+      <h4>The fix that always works</h4>
+      <p>Share the photo <b>to</b> Fauna instead of picking it from inside Fauna. Share intents send the original file with GPS intact.</p>
+      <h4>One-time setup</h4>
+      <ol>
+        <li>In Chrome on this device, tap the <b>menu (⋮) → Install app</b> (or "Add to Home Screen"). Open Fauna once from the home-screen icon to register it as a share target.</li>
+      </ol>
+      <h4>Adding a sighting after that</h4>
+      <ol>
+        <li>Open <b>Google Photos</b> (or any gallery app) and tap the photo you want to log.</li>
+        <li>Tap <b>Share</b> → pick <b>Fauna</b> from the share sheet.</li>
+        <li>Fauna opens with the photo loaded, GPS auto-filled, and the map pinned to where you took it.</li>
+      </ol>
+      <h4>For new sightings in the field</h4>
+      <p>Tap the <b>Camera</b> button instead — Fauna uses your device's current location, which is just as accurate as photo GPS.</p>
+    </div>
+    <div class="actions">
+      <button class="ghost" id="shareHelpClose" type="button">Close</button>
+      <button id="shareHelpInstall" type="button" style="display:none">Install Fauna</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast"></div>
 
 <script>
@@ -3553,6 +3657,28 @@ if ('serviceWorker' in navigator) {
     });
   });
 }
+
+// ===== PWA install state =====
+// We need to know whether Fauna is already installed (running standalone) so
+// the in-app share-target hint can guide the user to the right next step.
+const pwa = {
+  installPromptEvent: null,
+  isStandalone() {
+    return window.matchMedia('(display-mode: standalone)').matches
+      || window.navigator.standalone === true;
+  }
+};
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  pwa.installPromptEvent = e;
+  // Re-render the banner so it can show the live Install button
+  if (typeof updateShareTip === 'function') updateShareTip();
+});
+window.addEventListener('appinstalled', () => {
+  pwa.installPromptEvent = null;
+  if (typeof updateShareTip === 'function') updateShareTip();
+  toast('Fauna installed — share photos from Google Photos for auto-location');
+});
 
 // ===== Constants =====
 const CLASSES = [
@@ -4319,9 +4445,76 @@ function bindExifStripLongPress() {
     if (ev.target.id === 'exifDebugModal') $('#exifDebugModal').classList.remove('open');
   });
 }
+// ===== Share-target tip banner =====
+// Shows above the EXIF strip in the add sheet. Adapts to PWA install state and
+// to whether the most recently picked photo was missing GPS (the smoking-gun
+// case where the user most needs to know about the share workflow).
+let _shareHelpShownAuto = false;
+function updateShareTip() {
+  const tip = $('#shareTip');
+  if (!tip) return;
+  const installed = pwa.isStandalone();
+  const lastExif = S.draftPhotos.length ? S.draftPhotos[S.draftPhotos.length - 1].exif : null;
+  const lastWasStripped = lastExif && lastExif.hasExif && !Number.isFinite(lastExif.lat);
+  // Always show the tip in the add sheet — it's the most reliable workflow.
+  tip.style.display = 'flex';
+  const title = $('#shareTipTitle');
+  const desc = $('#shareTipDesc');
+  const cta = $('#shareTipCta');
+  if (lastWasStripped) {
+    title.textContent = 'Android stripped GPS from this photo';
+    desc.textContent = installed
+      ? 'Open Google Photos, tap Share, pick Fauna — that path keeps location intact.'
+      : 'Install Fauna to your home screen, then share photos from Google Photos.';
+    cta.textContent = installed ? 'How' : 'Install';
+    cta.classList.toggle('ghost', false);
+    // Only auto-pop the help modal once per session, so the user notices it.
+    if (!_shareHelpShownAuto) {
+      _shareHelpShownAuto = true;
+      setTimeout(() => openShareHelp(), 350);
+    }
+  } else if (installed) {
+    title.textContent = 'Tip: share for auto-location';
+    desc.textContent = 'Sharing a photo from Google Photos to Fauna keeps the GPS data the gallery picker would strip.';
+    cta.textContent = 'How';
+    cta.classList.toggle('ghost', true);
+  } else {
+    title.textContent = 'Auto-location for old photos';
+    desc.textContent = 'Install Fauna to your home screen, then share photos from Google Photos for accurate location.';
+    cta.textContent = pwa.installPromptEvent ? 'Install' : 'How';
+    cta.classList.toggle('ghost', false);
+  }
+  // Toggle install button inside help modal
+  const helpInstallBtn = $('#shareHelpInstall');
+  if (helpInstallBtn) {
+    helpInstallBtn.style.display = (!installed && pwa.installPromptEvent) ? 'block' : 'none';
+  }
+}
+function openShareHelp() {
+  $('#shareHelpModal').classList.add('open');
+  $('#shareHelpModal').setAttribute('aria-hidden', 'false');
+}
+function closeShareHelp() {
+  $('#shareHelpModal').classList.remove('open');
+  $('#shareHelpModal').setAttribute('aria-hidden', 'true');
+}
+async function triggerInstall() {
+  if (!pwa.installPromptEvent) {
+    openShareHelp();
+    return;
+  }
+  try {
+    pwa.installPromptEvent.prompt();
+    await pwa.installPromptEvent.userChoice;
+  } catch (e) { /* ignore */ }
+  pwa.installPromptEvent = null;
+  updateShareTip();
+}
+
 function updateExifStrip() {
   const strip = $('#exifStrip');
   bindExifStripLongPress();
+  updateShareTip();
   if (!S.draftPhotos.length || !S.draftPhotos[0].exif) {
     strip.style.display = 'none';
     teardownExifMap();
@@ -6192,14 +6385,17 @@ function renderMap() {
   if (!mapInstance) return;
   const groups = buildMapGroups();
   $('#mapEmpty').style.display = groups.length ? 'none' : 'block';
-  $('#trailToggle').classList.toggle('on', !!S.settings.showTrail);
+  // Trail starts off every time the map opens — user must opt in by tapping the
+  // toggle so the cinematic animation doesn't trigger unexpectedly.
+  S.settings.showTrail = false;
+  $('#trailToggle').classList.toggle('on', false);
+  cancelTrailAnim();
+  if (trailLayer) { try { mapInstance.removeLayer(trailLayer); } catch (e) {} trailLayer = null; }
   if (!groups.length) {
     if (markersLayer) { mapInstance.removeLayer(markersLayer); markersLayer = null; }
-    if (trailLayer) { mapInstance.removeLayer(trailLayer); trailLayer = null; }
     setTimeout(() => mapInstance.invalidateSize(), 50);
     return;
   }
-  drawTrail();
   // First bounds-fit on view-open, then renderMapMarkers will keep pace with zoom
   const rawBounds = L.latLngBounds(groups.map(g => [g.lat, g.lng]));
   _mapSuspendRecluster = true;
@@ -7038,6 +7234,18 @@ $('#addClose').onclick = closeAddSheet;
 $('#addCancel').onclick = closeAddSheet;
 $('#addSh').onclick = ev => { if (ev.target === $('#addSh')) closeAddSheet(); };
 $('#addSave').onclick = saveDraft;
+
+$('#shareTip').onclick = () => {
+  const cta = $('#shareTipCta');
+  if (cta && cta.textContent.trim().toLowerCase() === 'install' && pwa.installPromptEvent) {
+    triggerInstall();
+  } else {
+    openShareHelp();
+  }
+};
+$('#shareHelpClose').onclick = closeShareHelp;
+$('#shareHelpInstall').onclick = triggerInstall;
+$('#shareHelpModal').onclick = ev => { if (ev.target.id === 'shareHelpModal') closeShareHelp(); };
 $('#whenNowBtn').onclick = () => {
   $('#inWhen').value = toLocalDT(new Date());
   delete $('#inWhen').dataset.auto;
