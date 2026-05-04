@@ -1,0 +1,39 @@
+// Fauna service worker — primarily exists to receive Web Share Target POSTs
+// from Google Photos / system share sheet. Sharing photos via Android's share
+// intent preserves the original file (including GPS EXIF), bypassing the
+// MediaStore redaction that strips location from <input type="file"> picks.
+
+const SHARE_CACHE = 'fauna-share-v1';
+
+self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+
+self.addEventListener('fetch', event => {
+  const url = new URL(event.request.url);
+  if (event.request.method === 'POST' && url.pathname.endsWith('/share-target')) {
+    event.respondWith(handleShare(event.request));
+  }
+});
+
+async function handleShare(request) {
+  try {
+    const formData = await request.formData();
+    const files = formData.getAll('photos').filter(f => f && typeof f === 'object' && f.size > 0);
+    const cache = await caches.open(SHARE_CACHE);
+    // Clear any leftover entries from a prior share so the page only sees this batch
+    const keys = await cache.keys();
+    await Promise.all(keys.map(k => cache.delete(k)));
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const headers = new Headers({
+        'content-type': file.type || 'application/octet-stream',
+        'x-fauna-name': encodeURIComponent(file.name || `shared-${i}.jpg`),
+        'x-fauna-lm': String(file.lastModified || Date.now())
+      });
+      await cache.put(`/share-cache/${i}`, new Response(file, { headers }));
+    }
+    return Response.redirect(`./?shared=${files.length}`, 303);
+  } catch (err) {
+    return Response.redirect(`./?shared=error&msg=${encodeURIComponent(err.message || 'unknown')}`, 303);
+  }
+}

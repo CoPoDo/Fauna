@@ -14,6 +14,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,300;1,9..144,400;1,9..144,500&family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400;1,500;1,600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="manifest" href="./manifest.webmanifest">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
 <script src="https://unpkg.com/exifr@7.1.3/dist/full.umd.js" defer></script>
 <style>
@@ -1841,6 +1842,36 @@ textarea.fld-in { resize: vertical; min-height: 60px; }
 }
 .exif-strip .k { color: var(--green); font-weight: 500; }
 .exif-strip .v { color: var(--text); }
+.exif-strip { cursor: pointer; -webkit-user-select: none; user-select: none; }
+.exif-strip:active { background: linear-gradient(145deg, rgba(52,211,153,0.12), rgba(52,211,153,0.04)); }
+.exif-debug-modal {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 9999;
+  display: none; align-items: flex-end; padding: 16px;
+}
+.exif-debug-modal.open { display: flex; }
+.exif-debug-modal .panel {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 16px; max-height: 80vh; width: 100%;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.exif-debug-modal h3 {
+  font-family: 'Fraunces', serif; font-weight: 500; margin: 0;
+  padding: 16px 18px 10px; font-size: 18px; color: var(--text);
+  display: flex; justify-content: space-between; align-items: center;
+}
+.exif-debug-modal h3 button {
+  background: none; border: 0; color: var(--dim); font-size: 22px;
+  cursor: pointer; padding: 4px 8px; line-height: 1;
+}
+.exif-debug-modal pre {
+  margin: 0; padding: 0 18px 18px; overflow: auto; flex: 1;
+  font-family: 'JetBrains Mono','IBM Plex Mono',monospace;
+  font-size: 11px; line-height: 1.5; color: var(--dim);
+  white-space: pre-wrap; word-break: break-word;
+}
+.exif-debug-modal pre .tag { color: var(--green); }
+.exif-debug-modal pre .val { color: var(--text); }
+.exif-debug-modal pre .hi { color: var(--gold); }
 
 .exif-map {
   width: 100%;
@@ -3211,9 +3242,16 @@ body:has(#vS.active) .fab { display: none; }
     <div class="photo-picker" id="photoPicker"></div>
     <input type="file" id="photoInput" accept="image/*" multiple style="display:none">
     <input type="file" id="photoInputCam" accept="image/*" capture="environment" style="display:none">
+    <input type="file" id="photoInputFiles" accept="*/*" multiple style="display:none">
 
-    <div class="exif-strip" id="exifStrip" style="display:none"></div>
+    <div class="exif-strip" id="exifStrip" style="display:none" title="Tap and hold to view raw EXIF data"></div>
     <div class="exif-map" id="exifMap" style="display:none" aria-label="Photo location preview"></div>
+    <div class="exif-debug-modal" id="exifDebugModal">
+      <div class="panel">
+        <h3>Raw photo metadata <button id="exifDebugClose" aria-label="Close">×</button></h3>
+        <pre id="exifDebugBody"></pre>
+      </div>
+    </div>
     <div class="id-status" id="idStatus" style="display:none"></div>
 
     <div class="fld-row">
@@ -3505,22 +3543,16 @@ body:has(#vS.active) .fab { display: none; }
 <div id="toast"></div>
 
 <script>
-// ===== Manifest =====
-const manifest = {
-  name: 'Fauna', short_name: 'Fauna',
-  display: 'standalone',
-  background_color: '#0a0e0a', theme_color: '#0a0e0a',
-  start_url: '.',
-  icons: [{
-    src: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'><rect width='180' height='180' rx='40' fill='%230a0e0a'/><text x='90' y='128' font-family='Georgia,serif' font-size='105' font-style='italic' font-weight='500' fill='%2334d399' text-anchor='middle'>ƒ</text></svg>",
-    sizes: '180x180', type: 'image/svg+xml'
-  }]
-};
-const mBlob = new Blob([JSON.stringify(manifest)], { type: 'application/manifest+json' });
-const mLink = document.createElement('link');
-mLink.rel = 'manifest';
-mLink.href = URL.createObjectURL(mBlob);
-document.head.appendChild(mLink);
+// ===== Service worker (powers Web Share Target — sharing a photo from
+// Google Photos to Fauna preserves GPS EXIF, unlike <input type="file">
+// which goes through MediaStore and gets its location data stripped). =====
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch(err => {
+      console.warn('[SW] registration failed:', err);
+    });
+  });
+}
 
 // ===== Constants =====
 const CLASSES = [
@@ -3820,7 +3852,7 @@ async function waitForExifr(timeoutMs = 5000) {
   return !!window.exifr;
 }
 async function extractExif(file) {
-  const out = { at: null, lat: null, lng: null, make: null, model: null, hasExif: false, isHeic: false };
+  const out = { at: null, lat: null, lng: null, make: null, model: null, hasExif: false, isHeic: false, raw: null, fileInfo: { name: file?.name || '', type: file?.type || '', size: file?.size || 0, lastModified: file?.lastModified || 0 } };
   // Detect HEIC/HEIF — exifr can't parse these in a browser without an extra
   // decoder. We still try, but flag it so the UI can warn the user.
   const name = (file.name || '').toLowerCase();
@@ -3852,6 +3884,7 @@ async function extractExif(file) {
   }
   if (data) {
     out.hasExif = true;
+    out.raw = data;
     out.make = data.Make || null;
     out.model = data.Model || null;
     // ----- Date -----
@@ -4122,6 +4155,12 @@ $('#photoInputCam').addEventListener('change', async e => {
   for (const f of files) await handlePhotoPick(f);
   e.target.value = '';
 });
+$('#photoInputFiles').addEventListener('change', async e => {
+  const files = Array.from(e.target.files || []).filter(f => /^image\//.test(f.type) || /\.(jpe?g|png|heic|heif|webp|tiff?)$/i.test(f.name));
+  if (!files.length && (e.target.files || []).length) toast('Pick an image file');
+  for (const f of files) await handlePhotoPick(f);
+  e.target.value = '';
+});
 
 async function handlePhotoPick(file) {
   const idStatus = $('#idStatus');
@@ -4188,7 +4227,7 @@ async function applyExifToDraft(exif) {
   } else if (exif.isHeic && !exif.lat) {
     toast('⚠️ HEIC format — convert to JPEG for auto-location, or tap "Pin on map"');
   } else if (!exif.lat && exif.hasExif) {
-    toast('ℹ️ Photo has no GPS data — tap "Pin on map" to add location');
+    toast('⚠️ Android stripped GPS — try the Files button, or Share from Google Photos to Fauna');
   } else if (!exif.hasExif) {
     toast('ℹ️ No metadata in photo — set time and location manually');
   }
@@ -4204,8 +4243,85 @@ function teardownExifMap() {
     _exifMapMarker = null;
   }
 }
+function showExifDebug() {
+  const photo = S.draftPhotos[0];
+  if (!photo) return;
+  const e = photo.exif || {};
+  const body = $('#exifDebugBody');
+  const lines = [];
+  const fmt = (v) => {
+    if (v == null) return 'null';
+    if (v instanceof Date) return v.toISOString();
+    if (Array.isArray(v)) return '[' + v.map(fmt).join(', ') + ']';
+    if (typeof v === 'object') return JSON.stringify(v);
+    if (typeof v === 'string' && v.length > 200) return JSON.stringify(v.slice(0, 200) + '…');
+    return JSON.stringify(v);
+  };
+  lines.push('<span class="hi">── FILE ──</span>');
+  if (e.fileInfo) {
+    lines.push(`<span class="tag">name</span>     <span class="val">${e.fileInfo.name || '(none)'}</span>`);
+    lines.push(`<span class="tag">type</span>     <span class="val">${e.fileInfo.type || '(unknown)'}</span>`);
+    lines.push(`<span class="tag">size</span>     <span class="val">${(e.fileInfo.size/1024).toFixed(1)} KB</span>`);
+    if (e.fileInfo.lastModified) {
+      lines.push(`<span class="tag">modified</span> <span class="val">${new Date(e.fileInfo.lastModified).toISOString()}</span>`);
+    }
+  }
+  lines.push('');
+  lines.push('<span class="hi">── EXTRACTED ──</span>');
+  lines.push(`<span class="tag">date</span>     <span class="val">${e.at ? new Date(e.at).toISOString() : 'null'}</span>`);
+  lines.push(`<span class="tag">lat</span>      <span class="val">${e.lat == null ? 'null' : e.lat}</span>`);
+  lines.push(`<span class="tag">lng</span>      <span class="val">${e.lng == null ? 'null' : e.lng}</span>`);
+  lines.push(`<span class="tag">camera</span>   <span class="val">${[e.make, e.model].filter(Boolean).join(' ') || 'null'}</span>`);
+  lines.push(`<span class="tag">hasExif</span>  <span class="val">${e.hasExif}</span>`);
+  lines.push(`<span class="tag">isHeic</span>   <span class="val">${e.isHeic}</span>`);
+  lines.push('');
+  if (!e.lat && e.hasExif) {
+    lines.push('<span class="hi">⚠ GPS missing despite EXIF present.</span>');
+    lines.push('<span class="val">If this photo has GPS in Google Photos, Android stripped it during the picker handoff.</span>');
+    lines.push('<span class="val">Workarounds: (1) tap "Files" instead of "Gallery"; (2) install Fauna as a PWA and Share from Google Photos to Fauna.</span>');
+    lines.push('');
+  }
+  lines.push('<span class="hi">── RAW EXIF TAGS ──</span>');
+  if (e.raw && typeof e.raw === 'object') {
+    const keys = Object.keys(e.raw).sort();
+    if (!keys.length) lines.push('<span class="val">(empty)</span>');
+    for (const k of keys) {
+      const isGps = /^gps/i.test(k) || /^(latitude|longitude)$/i.test(k);
+      const tagClass = isGps ? 'hi' : 'tag';
+      lines.push(`<span class="${tagClass}">${k}</span> <span class="val">= ${fmt(e.raw[k])}</span>`);
+    }
+  } else {
+    lines.push('<span class="val">(no raw tags — exifr returned nothing)</span>');
+  }
+  body.innerHTML = lines.join('\n');
+  $('#exifDebugModal').classList.add('open');
+}
+let _exifLongPressT = null;
+function bindExifStripLongPress() {
+  const strip = $('#exifStrip');
+  if (!strip || strip.dataset.lpBound) return;
+  strip.dataset.lpBound = '1';
+  const start = () => {
+    clearTimeout(_exifLongPressT);
+    _exifLongPressT = setTimeout(() => { vibrate(12); showExifDebug(); }, 450);
+  };
+  const cancel = () => clearTimeout(_exifLongPressT);
+  strip.addEventListener('touchstart', start, { passive: true });
+  strip.addEventListener('touchend', cancel);
+  strip.addEventListener('touchmove', cancel);
+  strip.addEventListener('touchcancel', cancel);
+  strip.addEventListener('mousedown', start);
+  strip.addEventListener('mouseup', cancel);
+  strip.addEventListener('mouseleave', cancel);
+  strip.addEventListener('contextmenu', ev => { ev.preventDefault(); showExifDebug(); });
+  $('#exifDebugClose').addEventListener('click', () => $('#exifDebugModal').classList.remove('open'));
+  $('#exifDebugModal').addEventListener('click', ev => {
+    if (ev.target.id === 'exifDebugModal') $('#exifDebugModal').classList.remove('open');
+  });
+}
 function updateExifStrip() {
   const strip = $('#exifStrip');
+  bindExifStripLongPress();
   if (!S.draftPhotos.length || !S.draftPhotos[0].exif) {
     strip.style.display = 'none';
     teardownExifMap();
@@ -4226,8 +4342,12 @@ function updateExifStrip() {
     parts.push(`<span><span class="k">GPS</span> <span class="v">${e.lat.toFixed(4)}, ${e.lng.toFixed(4)}</span></span>`);
   } else if (e.isHeic) {
     parts.push(`<span style="color:var(--gold)"><span class="k" style="color:var(--gold)">HEIC</span> <span class="v" style="color:var(--dim)">unsupported metadata format — tap "Pin on map" below</span></span>`);
+  } else if (e.hasExif) {
+    // EXIF present but GPS stripped — almost always Android's MediaStore redacting
+    // location for files picked through <input type="file">. Tell the user how to bypass.
+    parts.push(`<span style="color:var(--gold)"><span class="k" style="color:var(--gold)">No GPS</span> <span class="v" style="color:var(--dim)">Android stripped location — try Files button, or Share from Google Photos. Hold this strip for details.</span></span>`);
   } else {
-    parts.push(`<span style="color:var(--gold)"><span class="k" style="color:var(--gold)">No GPS</span> <span class="v" style="color:var(--dim)">photo has no location — tap "Pin on map" below</span></span>`);
+    parts.push(`<span style="color:var(--gold)"><span class="k" style="color:var(--gold)">No GPS</span> <span class="v" style="color:var(--dim)">photo has no metadata — tap "Pin on map" below</span></span>`);
   }
   strip.style.display = 'flex';
   strip.innerHTML = `<span style="color:var(--green)">📷 photo metadata</span>` + parts.join('');
@@ -4357,9 +4477,14 @@ function renderPhotoPicker() {
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
       <span class="pp-add-lbl">Gallery</span>
     </button>
+    <button class="pp-add" id="ppAddFiles" title="Use the Files app — bypasses the system photo picker so GPS metadata is preserved">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+      <span class="pp-add-lbl">Files</span>
+    </button>
   `;
   $('#ppAdd').onclick = () => $('#photoInput').click();
   $('#ppAddCam').onclick = () => $('#photoInputCam').click();
+  $('#ppAddFiles').onclick = () => $('#photoInputFiles').click();
   el.querySelectorAll('.pp-rm').forEach(b => {
     b.onclick = ev => {
       ev.stopPropagation();
@@ -7791,6 +7916,55 @@ async function init() {
   // Auto-export when opened with ?backup=1 (used by hub fan-out)
   if (new URLSearchParams(location.search).get('backup') === '1') {
     setTimeout(() => { exportBackup(); }, 500);
+  }
+  // Handle incoming Web Share Target POST (photo shared from Google Photos)
+  await handleSharedPhotos();
+}
+
+// ===== Web Share Target receive =====
+// When the user shares a photo from Google Photos -> Fauna, the service
+// worker stores the file in a Cache and redirects here with ?shared=N. We
+// pull the file(s) back out, open the add sheet, and run them through the
+// regular handlePhotoPick flow. GPS EXIF is preserved because share intents
+// hand over the original file (no MediaStore redaction).
+async function handleSharedPhotos() {
+  const params = new URLSearchParams(location.search);
+  const sharedParam = params.get('shared');
+  if (!sharedParam) return;
+  // Strip the param so reloads don't re-trigger
+  params.delete('shared');
+  params.delete('msg');
+  const newSearch = params.toString();
+  history.replaceState(null, '', location.pathname + (newSearch ? '?' + newSearch : ''));
+  if (sharedParam === 'error') {
+    toast('Share failed — try again or use the Files button');
+    return;
+  }
+  const n = parseInt(sharedParam, 10) || 0;
+  if (n <= 0) return;
+  if (!('caches' in window)) {
+    toast('Sharing requires a modern browser');
+    return;
+  }
+  try {
+    const cache = await caches.open('fauna-share-v1');
+    const files = [];
+    for (let i = 0; i < n; i++) {
+      const resp = await cache.match(`/share-cache/${i}`);
+      if (!resp) continue;
+      const blob = await resp.blob();
+      const name = decodeURIComponent(resp.headers.get('x-fauna-name') || `shared-${i}.jpg`);
+      const lm = parseInt(resp.headers.get('x-fauna-lm') || '0', 10) || Date.now();
+      const type = resp.headers.get('content-type') || blob.type || 'image/jpeg';
+      files.push(new File([blob], name, { type, lastModified: lm }));
+      await cache.delete(`/share-cache/${i}`);
+    }
+    if (!files.length) return;
+    await openAddSheet(null);
+    for (const f of files) await handlePhotoPick(f);
+  } catch (e) {
+    console.warn('[share] receive failed:', e);
+    toast('Could not load shared photo: ' + (e.message || e));
   }
 }
 init().catch(e => {
