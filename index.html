@@ -2311,6 +2311,13 @@ textarea.fld-in { resize: vertical; min-height: 60px; }
   text-align: center;
 }
 #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+#toast.with-action { display: flex; align-items: center; gap: 12px; pointer-events: auto; padding: 8px 8px 8px 18px; }
+#toast.with-action .toast-undo {
+  background: var(--green); color: var(--bg);
+  border: 0; border-radius: 8px; padding: 6px 12px;
+  font-family: inherit; font-weight: 600; font-size: 12px;
+  letter-spacing: 0.06em; cursor: pointer;
+}
 
 /* ========== Celebration overlay ========== */
 .celebrate-ov {
@@ -3898,12 +3905,84 @@ function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;'
 function pad2(n) { return String(n).padStart(2, '0'); }
 function uid(pref='x') { return pref + '_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 function vibrate(p) { if (!S.settings.haptics) return; try { navigator.vibrate && navigator.vibrate(p); } catch (e) {} }
+function debounce(fn, ms = 250) {
+  let t = null;
+  return function (...args) {
+    clearTimeout(t);
+    t = setTimeout(() => fn.apply(this, args), ms);
+  };
+}
+// Warns once per session when IndexedDB usage crosses ~85% of the browser's
+// quota — photos are the only thing that can plausibly hit the limit, and a
+// silent failure is the worst outcome.
+let _quotaWarned = false;
+async function maybeWarnStorageQuota() {
+  if (_quotaWarned) return;
+  if (!navigator.storage || !navigator.storage.estimate) return;
+  try {
+    const { usage = 0, quota = 0 } = await navigator.storage.estimate();
+    if (quota > 0 && usage / quota > 0.85) {
+      _quotaWarned = true;
+      const usedMb = Math.round(usage / 1048576);
+      const quotaMb = Math.round(quota / 1048576);
+      toast(`Storage almost full (${usedMb}/${quotaMb} MB). Export a backup soon.`);
+    }
+  } catch (e) { /* ignore */ }
+}
+// Tracks photo-thumbnail object URLs per render scope so they can be revoked
+// when the same scope re-renders. Without this, every keystroke in search
+// leaks ~10 blob URLs that never get freed.
+const _thumbUrlsByScope = new Map();
+async function loadThumbs(scopeKey, container) {
+  const prev = _thumbUrlsByScope.get(scopeKey);
+  if (prev) for (const u of prev) URL.revokeObjectURL(u);
+  const next = [];
+  _thumbUrlsByScope.set(scopeKey, next);
+  const els = container.querySelectorAll('[data-thumb-id]');
+  await Promise.all(Array.from(els).map(async el => {
+    const photo = await DB.getPh(el.dataset.thumbId);
+    if (!photo) return;
+    const url = URL.createObjectURL(photo.blob);
+    next.push(url);
+    el.style.backgroundImage = `url(${url})`;
+    el.classList.remove('ph');
+  }));
+}
 function toast(msg) {
   const el = $('#toast');
   el.textContent = msg;
+  el.classList.remove('with-action');
   el.classList.add('show');
   clearTimeout(el._t);
   el._t = setTimeout(() => el.classList.remove('show'), 2200);
+}
+// Toast with an "Undo" action button. Resolves a one-shot promise: either the
+// undo callback fires (within ms) or the toast quietly dismisses and the caller
+// can finalise the destructive action. Reuses the existing toast container.
+function toastWithUndo(msg, onUndo, ms = 5500) {
+  const el = $('#toast');
+  clearTimeout(el._t);
+  el.classList.remove('show');
+  el.innerHTML = '';
+  const span = document.createElement('span');
+  span.textContent = msg;
+  const btn = document.createElement('button');
+  btn.className = 'toast-undo';
+  btn.type = 'button';
+  btn.textContent = 'Undo';
+  el.appendChild(span);
+  el.appendChild(btn);
+  el.classList.add('show', 'with-action');
+  let done = false;
+  const dismiss = () => {
+    if (done) return;
+    done = true;
+    el.classList.remove('show', 'with-action');
+    setTimeout(() => { if (!el.classList.contains('show')) el.innerHTML = ''; }, 300);
+  };
+  btn.onclick = () => { if (done) return; dismiss(); try { onUndo(); } catch (e) { console.warn(e); } };
+  el._t = setTimeout(dismiss, ms);
+  return { dismiss, isUndone: () => done && btn._undone };
 }
 function timeAgo(ts) {
   const d = Date.now() - ts;
@@ -4791,8 +4870,22 @@ function updateSaveState() {
   $('#addSave').disabled = !hasContent;
 }
 
+let _saving = false;
 async function saveDraft() {
   if (!S.draft) return;
+  if (_saving) return;
+  _saving = true;
+  const saveBtn = $('#addSave');
+  if (saveBtn) saveBtn.disabled = true;
+  try {
+    return await _saveDraftInner();
+  } finally {
+    _saving = false;
+    // Re-enable button (closeAddSheet may have already removed the listener)
+    if (saveBtn) updateSaveState();
+  }
+}
+async function _saveDraftInner() {
   const d = S.draft;
   // Build species (if species fields provided)
   const common = $('#inCommon').value.trim();
@@ -4846,6 +4939,7 @@ async function saveDraft() {
   }
 
   // Persist photos (new ones only)
+  await maybeWarnStorageQuota();
   const photoIds = [];
   for (const p of S.draftPhotos) {
     if (!p.existing) {
@@ -5343,11 +5437,7 @@ async function openStatsSheet() {
       setTimeout(() => openSpeciesSheet(el.dataset.sp), 220);
     };
   });
-  // Thumbs
-  body.querySelectorAll('[data-thumb-id]').forEach(async el => {
-    const photo = await DB.getPh(el.dataset.thumbId);
-    if (photo) el.style.backgroundImage = `url(${URL.createObjectURL(photo.blob)})`;
-  });
+  loadThumbs('stats', body);
 
   $('#statsSh').classList.add('open');
   requestAnimationFrame(() => { $('#statsSh .sh').scrollTop = 0; });
@@ -5544,10 +5634,7 @@ function renderOnThisDay() {
   host.querySelectorAll('.otd-card').forEach(el => {
     el.onclick = () => { vibrate(6); openDetail(el.dataset.entry); };
   });
-  host.querySelectorAll('[data-thumb-id]').forEach(async el => {
-    const photo = await DB.getPh(el.dataset.thumbId);
-    if (photo) el.style.backgroundImage = `url(${URL.createObjectURL(photo.blob)})`;
-  });
+  loadThumbs('otd', host);
 }
 
 // ===== SPECIES MERGE =====
@@ -5601,11 +5688,7 @@ function openMergePicker(sourceId) {
   $('#mergeShBody').querySelectorAll('.merge-opt').forEach(el => {
     el.onclick = () => confirmMerge(sourceId, el.dataset.target);
   });
-  // Load thumbs
-  $('#mergeShBody').querySelectorAll('[data-thumb-id]').forEach(async el => {
-    const photo = await DB.getPh(el.dataset.thumbId);
-    if (photo) el.style.backgroundImage = `url(${URL.createObjectURL(photo.blob)})`;
-  });
+  loadThumbs('merge', $('#mergeShBody'));
   $('#mergeSh').classList.add('open');
   requestAnimationFrame(() => { $('#mergeSh .sh').scrollTop = 0; });
 }
@@ -5891,14 +5974,7 @@ function renderLifeList() {
   body.querySelectorAll('.ll-card[data-entry]').forEach(el => {
     el.onclick = () => openDetail(el.dataset.entry);
   });
-  body.querySelectorAll('[data-thumb-id]').forEach(async el => {
-    const photo = await DB.getPh(el.dataset.thumbId);
-    if (photo) {
-      const url = URL.createObjectURL(photo.blob);
-      el.style.backgroundImage = `url(${url})`;
-      el.classList.remove('ph');
-    }
-  });
+  loadThumbs('life', body);
 }
 
 function renderLifeCard(sp, count, thumbId) {
@@ -6010,14 +6086,7 @@ function renderFeed() {
   body.querySelectorAll('.feed-entry').forEach(el => {
     el.onclick = () => openDetail(el.dataset.id);
   });
-  body.querySelectorAll('[data-thumb-id]').forEach(async el => {
-    const photo = await DB.getPh(el.dataset.thumbId);
-    if (photo) {
-      const url = URL.createObjectURL(photo.blob);
-      el.style.backgroundImage = `url(${url})`;
-      el.classList.remove('ph');
-    }
-  });
+  loadThumbs('feed', body);
 }
 
 function renderFeedItem(e) {
@@ -6460,14 +6529,7 @@ function openMapSheet(group) {
       setTimeout(() => openDetail(el.dataset.id), 220);
     };
   });
-  $('#mapShBody').querySelectorAll('[data-thumb-id]').forEach(async el => {
-    const photo = await DB.getPh(el.dataset.thumbId);
-    if (photo) {
-      const url = URL.createObjectURL(photo.blob);
-      el.style.backgroundImage = `url(${url})`;
-      el.classList.remove('ph');
-    }
-  });
+  loadThumbs('mapSh', $('#mapShBody'));
   $('#mapShClose').onclick = () => $('#mapSh').classList.remove('open');
   $('#mapSh').classList.add('open');
 }
@@ -6707,12 +6769,8 @@ async function openSpeciesSheet(spId) {
   `;
   animateStatBars($('#spBody'));
   $('#spMergeBtn')?.addEventListener('click', () => openMergePicker(spId));
-  $('#spBody').querySelectorAll('[data-thumb-id]').forEach(async el => {
-    const photo = await DB.getPh(el.dataset.thumbId);
-    if (photo) {
-      const url = URL.createObjectURL(photo.blob);
-      el.style.backgroundImage = `url(${url})`;
-    }
+  loadThumbs('sp', $('#spBody'));
+  $('#spBody').querySelectorAll('[data-thumb-id]').forEach(el => {
     el.onclick = () => {
       $('#spSh').classList.remove('open');
       setTimeout(() => openDetail(el.dataset.entry), 220);
@@ -6766,6 +6824,9 @@ $('#setBtnL').onclick = openSettings;
 $('#setBtnF').onclick = openSettings;
 $('#setBtnS').onclick = openSettings;
 $('#setClose').onclick = () => $('#setSh').classList.remove('open');
+$('#setSh').onclick = ev => { if (ev.target === $('#setSh')) $('#setSh').classList.remove('open'); };
+$('#mapSh').onclick = ev => { if (ev.target === $('#mapSh')) $('#mapSh').classList.remove('open'); };
+$('#celeb').onclick = ev => { if (ev.target === $('#celeb')) $('#celeb').classList.remove('open'); };
 $('#setSave').onclick = async () => {
   S.settings.apiKey = $('#apiKeyIn').value.trim();
   S.settings.model = $('#modelIn').value;
@@ -7261,21 +7322,41 @@ $$('#detSh [data-det]').forEach(b => {
       $('#detSh').classList.remove('open');
       setTimeout(() => openAddSheet(e), 220);
     } else if (b.dataset.det === 'delete') {
-      if (!confirm('Delete this sighting?')) return;
-      // Delete photos too
-      for (const pid of e.photoIds || []) await DB.delPh(pid);
-      await DB.delE(id);
-      // If this was the last sighting of its species, delete the orphan species
-      if (e.speciesId) {
-        const remaining = (await DB.allE()).filter(x => x.speciesId === e.speciesId).length;
-        if (remaining === 0) await DB.delSp(e.speciesId);
+      // Snapshot for undo, then optimistically remove from memory so the UI
+      // updates instantly. DB writes are deferred until the undo window closes.
+      const photoSnap = [];
+      for (const pid of e.photoIds || []) {
+        const ph = await DB.getPh(pid);
+        if (ph) photoSnap.push(ph);
       }
-      S.entries = await DB.allE();
-      S.species = await DB.allSp();
+      const entrySnap = { ...e };
+      let speciesSnap = null;
+      if (e.speciesId) {
+        const remaining = S.entries.filter(x => x.speciesId === e.speciesId && x.id !== e.id).length;
+        if (remaining === 0) speciesSnap = S.species.find(s => s.id === e.speciesId) || null;
+      }
+      S.entries = S.entries.filter(x => x.id !== e.id);
+      if (speciesSnap) S.species = S.species.filter(s => s.id !== speciesSnap.id);
       await assignDexNumbers();
       $('#detSh').classList.remove('open');
+      destroyDetMiniMap();
       renderAll();
-      toast('Deleted');
+      vibrate(8);
+      let undone = false;
+      toastWithUndo('Deleted', async () => {
+        undone = true;
+        S.entries = [...S.entries, entrySnap].sort((a, b) => b.at - a.at);
+        if (speciesSnap) S.species = [...S.species, speciesSnap];
+        await assignDexNumbers();
+        renderAll();
+        toast('Restored');
+      });
+      setTimeout(async () => {
+        if (undone) return;
+        for (const ph of photoSnap) await DB.delPh(ph.id);
+        await DB.delE(entrySnap.id);
+        if (speciesSnap) await DB.delSp(speciesSnap.id);
+      }, 5800);
     }
   };
 });
@@ -7354,12 +7435,14 @@ $('#hereBtn').onclick = async () => {
   }
 };
 
-$('#feedSearch').oninput = () => { S.feedSearch = $('#feedSearch').value; renderFeed(); };
+const _debouncedRenderFeed = debounce(renderFeed, 220);
+const _debouncedRenderLife = debounce(renderLifeList, 220);
+$('#feedSearch').oninput = () => { S.feedSearch = $('#feedSearch').value; _debouncedRenderFeed(); };
 
 $('#lifeSearch').oninput = () => {
   S.lifeSearch = $('#lifeSearch').value;
   $('#lifeSearchClear').classList.toggle('on', !!S.lifeSearch);
-  renderLifeList();
+  _debouncedRenderLife();
 };
 $('#lifeSearchClear').onclick = () => {
   S.lifeSearch = '';
@@ -7389,7 +7472,9 @@ $('#trailToggle').onclick = async () => {
 
 document.addEventListener('keydown', ev => {
   if (ev.key !== 'Escape') return;
-  if ($('#lb').classList.contains('open')) $('#lb').classList.remove('open');
+  if ($('#exifDebugModal').classList.contains('open')) $('#exifDebugModal').classList.remove('open');
+  else if ($('#shareHelpModal').classList.contains('open')) closeShareHelp();
+  else if ($('#lb').classList.contains('open')) $('#lb').classList.remove('open');
   else if ($('#chipSh').classList.contains('open')) $('#chipSh').classList.remove('open');
   else if ($('#mergeSh').classList.contains('open')) $('#mergeSh').classList.remove('open');
   else if ($('#statsSh').classList.contains('open')) $('#statsSh').classList.remove('open');
