@@ -6605,6 +6605,27 @@ function initMap() {
   mapInstance.on('zoomend moveend', () => {
     if (!_mapSuspendRecluster) renderMapMarkers();
   });
+  // Long-press / right-click on empty map → open add-sighting sheet with this
+  // exact spot as the prefilled location. Markers stop propagation in their
+  // own contextmenu handlers so this only fires on tile background.
+  mapInstance.on('contextmenu', async ev => {
+    const { lat, lng } = ev.latlng;
+    vibrate(12);
+    toast('Pin dropped — opening sighting…');
+    let location = null;
+    try { location = await reverseGeocode(lat, lng); } catch (e) {}
+    if (!location) location = { lat, lng, cc: '', country: '', city: '' };
+    await openAddSheet(null);
+    S.draft.location = location;
+    const inLoc = $('#inLoc');
+    if (inLoc) {
+      const human = [location.city, location.country].filter(Boolean).join(', ');
+      inLoc.value = human || `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+      inLoc.dataset.auto = '1';
+    }
+    const status = $('#locStatus');
+    if (status) status.textContent = '(from map pin)';
+  });
 }
 function entryMatchesMapFilters(e) {
   if (!entryMatchesClassFilter(e)) return false;
@@ -7410,7 +7431,7 @@ function renderMapMarkers() {
     // fires when there's a single species at the marker (multi-species
     // clusters don't have an obvious choice).
     mk.on('contextmenu', ev => {
-      L.DomEvent.preventDefault(ev);
+      L.DomEvent.stop(ev.originalEvent);
       const speciesIds = [...new Set(g.entries.map(e => e.speciesId).filter(Boolean))];
       if (speciesIds.length !== 1) return;
       vibrate(10);
