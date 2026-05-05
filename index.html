@@ -4934,8 +4934,8 @@ function showExifDebug() {
   };
   lines.push('<span class="hi">── FILE ──</span>');
   if (e.fileInfo) {
-    lines.push(`<span class="tag">name</span>     <span class="val">${e.fileInfo.name || '(none)'}</span>`);
-    lines.push(`<span class="tag">type</span>     <span class="val">${e.fileInfo.type || '(unknown)'}</span>`);
+    lines.push(`<span class="tag">name</span>     <span class="val">${esc(e.fileInfo.name || '(none)')}</span>`);
+    lines.push(`<span class="tag">type</span>     <span class="val">${esc(e.fileInfo.type || '(unknown)')}</span>`);
     lines.push(`<span class="tag">size</span>     <span class="val">${(e.fileInfo.size/1024).toFixed(1)} KB</span>`);
     if (e.fileInfo.lastModified) {
       lines.push(`<span class="tag">modified</span> <span class="val">${new Date(e.fileInfo.lastModified).toISOString()}</span>`);
@@ -4946,7 +4946,7 @@ function showExifDebug() {
   lines.push(`<span class="tag">date</span>     <span class="val">${e.at ? new Date(e.at).toISOString() : 'null'}</span>`);
   lines.push(`<span class="tag">lat</span>      <span class="val">${e.lat == null ? 'null' : e.lat}</span>`);
   lines.push(`<span class="tag">lng</span>      <span class="val">${e.lng == null ? 'null' : e.lng}</span>`);
-  lines.push(`<span class="tag">camera</span>   <span class="val">${[e.make, e.model].filter(Boolean).join(' ') || 'null'}</span>`);
+  lines.push(`<span class="tag">camera</span>   <span class="val">${esc([e.make, e.model].filter(Boolean).join(' ') || 'null')}</span>`);
   lines.push(`<span class="tag">hasExif</span>  <span class="val">${e.hasExif}</span>`);
   lines.push(`<span class="tag">isHeic</span>   <span class="val">${e.isHeic}</span>`);
   lines.push('');
@@ -4963,7 +4963,10 @@ function showExifDebug() {
     for (const k of keys) {
       const isGps = /^gps/i.test(k) || /^(latitude|longitude)$/i.test(k);
       const tagClass = isGps ? 'hi' : 'tag';
-      lines.push(`<span class="${tagClass}">${k}</span> <span class="val">= ${fmt(e.raw[k])}</span>`);
+      // Tag names from exifr are well-known identifiers but escape defensively;
+      // values can be arbitrary strings from the user's file and absolutely
+      // must be escaped before going into innerHTML.
+      lines.push(`<span class="${tagClass}">${esc(k)}</span> <span class="val">= ${esc(fmt(e.raw[k]))}</span>`);
     }
   } else {
     lines.push('<span class="val">(no raw tags — exifr returned nothing)</span>');
