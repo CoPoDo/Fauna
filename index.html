@@ -3626,6 +3626,9 @@ body:has(#vS.active) .fab { display: none; }
   <div class="map-top">
     <div></div>
     <div style="display:flex;gap:8px">
+      <button class="map-tbtn" id="mapStyleBtn" aria-label="Map style">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2 3 7l9 5 9-5-9-5z"/><path d="M3 12l9 5 9-5"/><path d="M3 17l9 5 9-5"/></svg>
+      </button>
       <button class="map-tbtn" id="trailToggle" aria-label="Toggle trail"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="5" cy="19" r="2"/><circle cx="19" cy="5" r="2"/><path d="M7 17c3-3 5-7 5-10M17 7c-3 3-7 5-10 5" stroke-dasharray="2 3"/></svg></button>
       <button class="map-tbtn" id="fitMap" aria-label="Fit all"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 9V3h6M21 9V3h-6M3 15v6h6M21 15v6h-6"/></svg></button>
     </div>
@@ -4256,7 +4259,8 @@ const S = {
     locOn: true,
     lifeSort: 'recent',
     showTrail: false,
-    trailColorMode: 'recency' // 'recency' | 'class' | 'rarity'
+    trailColorMode: 'recency', // 'recency' | 'class' | 'rarity'
+    mapStyle: 'dark' // 'dark' | 'voyager' | 'satellite'
   },
   draft: null,           // in-progress add/edit
   draftPhotos: [],       // [{ id, blob, url, exif:{at,lat,lng} }]
@@ -6609,10 +6613,50 @@ function tripLabel(t) {
   return { loc, dateRange, cc: t.cc };
 }
 
+// Tile styles — swappable. Satellite is great for habitat context, voyager
+// for sane-coloured terrain, dark for the cinematic default. All providers
+// listed are free and don't require an API key for occasional use.
+const TILE_STYLES = {
+  dark: {
+    label: 'Dark',
+    url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+    subdomains: 'abcd', maxZoom: 19
+  },
+  voyager: {
+    label: 'Voyager',
+    url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+    subdomains: 'abcd', maxZoom: 19
+  },
+  satellite: {
+    label: 'Satellite',
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    subdomains: '', maxZoom: 19
+  }
+};
+let _activeTileLayer = null;
+function applyTileStyle(name) {
+  if (!mapInstance) return;
+  const style = TILE_STYLES[name] || TILE_STYLES.dark;
+  if (_activeTileLayer) { try { mapInstance.removeLayer(_activeTileLayer); } catch (e) {} }
+  const opts = { maxZoom: style.maxZoom };
+  if (style.subdomains) opts.subdomains = style.subdomains;
+  _activeTileLayer = L.tileLayer(style.url, opts).addTo(mapInstance);
+  S.settings.mapStyle = name;
+  saveSettings();
+}
+function cycleTileStyle() {
+  const order = Object.keys(TILE_STYLES);
+  const cur = S.settings.mapStyle || 'dark';
+  const idx = order.indexOf(cur);
+  const next = order[(idx + 1) % order.length];
+  applyTileStyle(next);
+  toast(`Map: ${TILE_STYLES[next].label}`);
+}
+
 function initMap() {
   if (mapInstance || typeof L === 'undefined') return;
   mapInstance = L.map('mapC', { zoomControl: true, attributionControl: false }).setView([13.75, 100.5], 4);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 19, subdomains: 'abcd' }).addTo(mapInstance);
+  applyTileStyle(S.settings.mapStyle || 'dark');
   mapInstance.on('click', () => $('#mapSh').classList.remove('open'));
   // Re-cluster markers whenever zoom changes so they don't visually overlap/flash
   mapInstance.on('zoomend moveend', () => {
@@ -8431,6 +8475,7 @@ $('#fitMap').onclick = () => {
   mapInstance.fitBounds(bounds, { padding: [60, 60], maxZoom: 13, animate: true });
 };
 
+$('#mapStyleBtn').onclick = () => { cycleTileStyle(); vibrate(6); };
 $('#trailToggle').onclick = async () => {
   S.settings.showTrail = !S.settings.showTrail;
   await saveSettings();
