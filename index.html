@@ -7161,7 +7161,19 @@ function renderMapMarkers() {
       className: 'fmkr-wrap', iconSize: [44, 44], iconAnchor: [22, 22]
     });
     const mk = L.marker([g.lat, g.lng], { icon }).addTo(markersLayer);
-    mk.on('click', () => openMapSheet(g));
+    mk.on('click', () => {
+      // If the marker is a merged cluster (multiple distinct raw locations
+      // collapsed by pixel-space clustering), zoom in instead of dumping all
+      // the entries into one sheet. Each tap reveals more of the underlying
+      // structure until individual locations stand alone — then tap opens the
+      // sheet for that single spot.
+      const z = mapInstance.getZoom();
+      if (g._merged && z < 17) {
+        mapInstance.flyTo([g.lat, g.lng], Math.min(17, z + 2), { duration: 0.5 });
+      } else {
+        openMapSheet(g);
+      }
+    });
   });
 }
 function rarityRank(r) {
