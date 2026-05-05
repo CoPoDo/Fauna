@@ -4440,6 +4440,7 @@ function toastWithUndo(msg, onUndo, ms = 5500) {
   return { dismiss, isUndone: () => done && btn._undone };
 }
 function timeAgo(ts) {
+  if (!Number.isFinite(ts)) return '—';
   const d = Date.now() - ts;
   if (d < 60000) return 'just now';
   if (d < 3600000) return Math.floor(d / 60000) + 'm ago';
@@ -4448,6 +4449,7 @@ function timeAgo(ts) {
   return new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 function fmtDate(ts) {
+  if (!Number.isFinite(ts)) return '—';
   const d = new Date(ts);
   const today = new Date(); today.setHours(0,0,0,0);
   const yest = new Date(today); yest.setDate(today.getDate() - 1);
@@ -7584,6 +7586,14 @@ function renderMap() {
   const groups = buildMapGroups();
   $('#mapEmpty').style.display = groups.length ? 'none' : 'block';
   renderHereMarker();
+  // Re-fetch the device's GPS every time the map opens so the "you are here"
+  // dot moves with the user across map sessions instead of being pinned to
+  // wherever they were when the page first loaded. maximumAge: 5min in
+  // guessCurrentGps means a recent fix is served from cache without a fresh
+  // request.
+  if (S.settings.locOn) {
+    guessCurrentGps().then(() => renderHereMarker()).catch(() => {});
+  }
   // Trail starts off every time the map opens — user must opt in by tapping the
   // toggle so the cinematic animation doesn't trigger unexpectedly.
   S.settings.showTrail = false;
