@@ -3692,6 +3692,9 @@ body:has(#vS.active) .fab { display: none; }
       <button class="thc thc-skip" id="trailHudSkip" type="button" aria-label="Skip to end">
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 4l11 8-11 8zM18 4h2v16h-2z"/></svg>
       </button>
+      <button class="thc thc-share" id="trailHudShare" type="button" aria-label="Share journey" style="display:none">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8.2 13.4l7.6 3.7M15.8 6.9l-7.6 3.7"/></svg>
+      </button>
       <button class="thc thc-replay" id="trailHudReplay" type="button" aria-label="Replay" style="display:none">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
       </button>
@@ -6909,6 +6912,42 @@ function hideTripBanner() {
   if (banner) banner.classList.remove('on');
 }
 
+let _trailShareText = '';
+function buildJourneyShareText(state) {
+  const km = state.km < 10 ? state.km.toFixed(1) : Math.round(state.km);
+  const parts = [`${km} km`, `${state.species.size} species`];
+  if (state.countries && state.countries.size > 1) parts.push(`${state.countries.size} countries`);
+  parts.push(`${state.sightings} sightings`);
+  // Find rarest for flavour
+  let rarestName = '';
+  let rarestRank = 0;
+  for (const sid of state.species) {
+    const sp = S.species.find(s => s.id === sid);
+    if (!sp) continue;
+    const r = rarityRank(sp.rarity);
+    if (r > rarestRank) { rarestRank = r; rarestName = sp.commonName || sp.scientific || ''; }
+  }
+  let line = `My Fauna journey: ${parts.join(' · ')}`;
+  if (rarestName && rarestRank >= 4) line += ` 🌿 Rarest find: ${rarestName}`;
+  return line;
+}
+async function shareJourneyText() {
+  if (!_trailShareText) return;
+  if (navigator.share) {
+    try {
+      await navigator.share({ text: _trailShareText, title: 'Fauna journey' });
+      return;
+    } catch (e) { /* user dismissed or unsupported, fall through */ }
+  }
+  // Clipboard fallback
+  try {
+    await navigator.clipboard.writeText(_trailShareText);
+    toast('Copied journey summary');
+  } catch (e) {
+    toast(_trailShareText);
+  }
+}
+
 // Playback controls — speed multiplier compresses time for sleeps and the
 // per-frame animation step. Pause holds the segment progress at its current
 // fraction by remembering the wall-clock pause moment and adjusting start.
@@ -7176,6 +7215,7 @@ async function drawTrail() {
   // Reset playback controls visibility for a fresh run
   const _btn = id => $(id);
   if (_btn('#trailHudReplay')) _btn('#trailHudReplay').style.display = 'none';
+  if (_btn('#trailHudShare')) _btn('#trailHudShare').style.display = 'none';
   if (_btn('#trailHudPause')) _btn('#trailHudPause').style.display = '';
   if (_btn('#trailHudSpeed')) _btn('#trailHudSpeed').style.display = '';
   if (_btn('#trailHudSkip')) _btn('#trailHudSkip').style.display = '';
@@ -7318,6 +7358,11 @@ async function drawTrail() {
   if ($('#trailHudSpeed')) $('#trailHudSpeed').style.display = 'none';
   if ($('#trailHudSkip')) $('#trailHudSkip').style.display = 'none';
   if ($('#trailHudReplay')) $('#trailHudReplay').style.display = '';
+  if ($('#trailHudShare')) $('#trailHudShare').style.display = '';
+  // Build a shareable summary string snapshotted at journey-end stats so
+  // the share button can fire without re-reading hudState (which gets
+  // reset on replay).
+  _trailShareText = buildJourneyShareText(hudState);
   // Replace the place/date row with a celebration headline + the rarest find.
   // Pulls the user's eye from "where am I now" to "what did I just see"
   // before the HUD fades and the replay button takes over.
@@ -8533,6 +8578,7 @@ $('#trailHudReplay').onclick = async () => {
   $('#trailToggle').classList.toggle('on', true);
   drawTrail();
 };
+$('#trailHudShare').onclick = () => { vibrate(6); shareJourneyText(); };
 
 document.addEventListener('keydown', ev => {
   if (ev.key !== 'Escape') return;
