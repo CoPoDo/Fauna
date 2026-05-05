@@ -6797,7 +6797,15 @@ function setMapSpeciesFilter(spId) {
   } else {
     chip?.classList.remove('on');
   }
-  // Re-render markers; if trail was on, redraw it too with the new filter
+  // If a trail is currently animating, just re-trigger drawTrail with the new
+  // filter — its own setup will re-render markers and reframe the camera.
+  // Calling renderMapMarkers + a separate flyTo here would cause a brief
+  // flash of cluster markers and a camera shove that the trail's opening
+  // flyToBounds immediately fights for control of.
+  if (S.settings.showTrail && _trailAnimAbort) {
+    drawTrail();
+    return;
+  }
   renderMapMarkers();
   if (mapInstance && spId) {
     // Frame the camera around the filtered markers so the user immediately
@@ -6810,7 +6818,6 @@ function setMapSpeciesFilter(spId) {
       mapInstance.flyToBounds(b, { padding: [80, 80], duration: 0.7, maxZoom: 13 });
     }
   }
-  if (S.settings.showTrail) drawTrail();
 }
 
 // Pixel-space clustering — merges markers that would visually overlap at the
@@ -7349,12 +7356,9 @@ async function drawTrail() {
       color: seg.color, weight: 3.4, opacity: 0.95,
       lineCap: 'round', lineJoin: 'round', interactive: false
     }).addTo(trailLayer);
-    // Tighter follow constant so the head stays close to viewport centre
-    // throughout — at the previous 0.09 the camera was visibly lagging on
-    // short segments where there aren't enough frames for the lerp to
-    // converge. 0.18 reaches ~99% of head position over a 420ms minimum
-    // segment without feeling rigid.
-    const FOLLOW = 0.18;
+    // Base follow constant — tight enough for the head to stay near the
+    // viewport centre at 1× speed without feeling rigid.
+    const BASE_FOLLOW = 0.18;
     // Smaller lookahead now that the camera tracks tightly — still enough
     // to anticipate the head's direction without the camera shooting past.
     const LOOKAHEAD_MS = 120;
@@ -7400,6 +7404,11 @@ async function drawTrail() {
         const zoomT = Math.min(1, t / 0.6);
         const ez = zoomT < 0.5 ? 2*zoomT*zoomT : 1 - Math.pow(-2*zoomT + 2, 2)/2;
         const z = startZoom + (targetSegZoom - startZoom) * ez;
+        // Scale follow with playback speed so the camera doesn't visibly
+        // lag at 2× / 4× — at those speeds the segment plays in 6–12 frames,
+        // far too few for a 0.18 lerp to converge. Capped so it never goes
+        // fully rigid (>0.95 looks like a hard snap to the head).
+        const FOLLOW = Math.min(0.95, BASE_FOLLOW * Math.max(1, _trailSpeed));
         const c = mapInstance.getCenter();
         const nLat = c.lat + (leadLat - c.lat) * FOLLOW;
         const nLng = c.lng + (leadLng - c.lng) * FOLLOW;
