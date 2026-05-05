@@ -1604,6 +1604,30 @@ body::before {
   font-size: 10px; line-height: 1;
 }
 
+/* You-are-here marker */
+.here-mkr-wrap { background: none !important; border: none !important; }
+.here-mkr {
+  width: 22px; height: 22px;
+  position: relative;
+}
+.here-mkr-dot {
+  position: absolute; inset: 6px;
+  background: #60a5fa;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 0 12px rgba(96,165,250,0.8);
+}
+.here-mkr-pulse {
+  position: absolute; inset: 0;
+  border-radius: 50%;
+  background: rgba(96,165,250,0.35);
+  animation: hereMkrPulse 2.4s ease-out infinite;
+}
+@keyframes hereMkrPulse {
+  0% { transform: scale(0.5); opacity: 0.7; }
+  100% { transform: scale(1.7); opacity: 0; }
+}
+
 /* Map sheet */
 .map-sheet {
   position: fixed;
@@ -6420,7 +6444,7 @@ function renderFeedItem(e) {
 }
 
 // ===== RENDER: Map =====
-let mapInstance = null, markersLayer = null, trailLayer = null;
+let mapInstance = null, markersLayer = null, trailLayer = null, hereMarker = null;
 
 // ===== Trips (location + time based auto-grouping) =====
 function distanceKm(a, b) {
@@ -7145,11 +7169,24 @@ function getTrailRenderer() {
   return _trailRenderer;
 }
 
+function renderHereMarker() {
+  if (!mapInstance) return;
+  if (hereMarker) { try { mapInstance.removeLayer(hereMarker); } catch (e) {} hereMarker = null; }
+  const here = S.currentGps;
+  if (!here || !Number.isFinite(here.lat) || !Number.isFinite(here.lng)) return;
+  const icon = L.divIcon({
+    html: `<div class="here-mkr"><div class="here-mkr-pulse"></div><div class="here-mkr-dot"></div></div>`,
+    className: 'here-mkr-wrap', iconSize: [22, 22], iconAnchor: [11, 11]
+  });
+  hereMarker = L.marker([here.lat, here.lng], { icon, interactive: false, keyboard: false, zIndexOffset: 500 }).addTo(mapInstance);
+}
+
 function renderMap() {
   initMap();
   if (!mapInstance) return;
   const groups = buildMapGroups();
   $('#mapEmpty').style.display = groups.length ? 'none' : 'block';
+  renderHereMarker();
   // Trail starts off every time the map opens — user must opt in by tapping the
   // toggle so the cinematic animation doesn't trigger unexpectedly.
   S.settings.showTrail = false;
@@ -7558,6 +7595,13 @@ $$('#setSh .sw').forEach(sw => {
 
 // ===== Nav / bindings =====
 function showV(n) {
+  // Leaving the map view aborts any in-flight trail animation so it doesn't
+  // keep panning a hidden map and burning frames.
+  if (n !== 'Map' && _trailAnimAbort) {
+    cancelTrailAnim();
+    S.settings.showTrail = false;
+    $('#trailToggle')?.classList.toggle('on', false);
+  }
   $$('.view').forEach(v => v.classList.remove('active'));
   $('#v' + n).classList.add('active');
   $$('.nav-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === n));
