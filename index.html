@@ -4812,7 +4812,6 @@ $('#photoInputFiles').addEventListener('change', async e => {
 });
 
 async function handlePhotoPick(file) {
-  const idStatus = $('#idStatus');
   try {
     // Extract EXIF from original
     const exif = await extractExif(file);
