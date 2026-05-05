@@ -4659,7 +4659,13 @@ async function guessCurrentGps() {
   return new Promise(res => {
     navigator.geolocation.getCurrentPosition(
       async pos => {
-        const loc = await reverseGeocode(pos.coords.latitude, pos.coords.longitude);
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+        // Reverse-geocode for human-readable place name; if it fails (e.g.
+        // offline) keep the bare coords so the "you are here" marker, map
+        // pin defaults, and "Here" button still work.
+        let loc = await reverseGeocode(lat, lng);
+        if (!loc) loc = { lat, lng, cc: '', country: '', city: '' };
         S.currentGps = loc;
         res(loc);
       },
@@ -4844,6 +4850,9 @@ async function applyExifToDraft(exif) {
   if (Number.isFinite(exif.lat) && Number.isFinite(exif.lng) && (!$('#inLoc').value || $('#inLoc').dataset.auto === '1')) {
     $('#locStatus').textContent = '(finding place...)';
     const loc = await reverseGeocode(exif.lat, exif.lng);
+    // Reverse-geocode is a network call; if the sheet was closed while
+    // we awaited, S.draft is null and assigning .location would throw.
+    if (!S.draft) return;
     if (loc) {
       S.draft.location = loc;
       $('#inLoc').value = [loc.city, loc.country].filter(Boolean).join(', ');
@@ -5127,10 +5136,14 @@ async function runAiIdentify() {
       at: photo.exif?.at || (S.draft?.id ? null : Date.now())
     };
     const result = await aiIdentify(photo.blob, ctx);
+    // Sheet may have been closed during the API call — bail rather than
+    // throwing on a null S.draft mutation.
+    if (!S.draft) return;
     S.draft.pendingAI = false;
     applyAiResult(result);
     setIdStatus('ident', `Identified — confidence: ${result.confidence || 'unknown'}`, 'Re-run');
   } catch (e) {
+    if (!S.draft) return;
     if (isNetworkError(e)) {
       S.draft.pendingAI = true;
       setIdStatus('pending', 'Offline — will auto-identify when reconnected', null);
