@@ -7318,6 +7318,29 @@ async function drawTrail() {
   if ($('#trailHudSpeed')) $('#trailHudSpeed').style.display = 'none';
   if ($('#trailHudSkip')) $('#trailHudSkip').style.display = 'none';
   if ($('#trailHudReplay')) $('#trailHudReplay').style.display = '';
+  // Replace the place/date row with a celebration headline + the rarest find.
+  // Pulls the user's eye from "where am I now" to "what did I just see"
+  // before the HUD fades and the replay button takes over.
+  const flagEl = $('#trailHudFlag');
+  const locEl = $('#trailHudLoc');
+  const dateEl = $('#trailHudDate');
+  if (flagEl) flagEl.textContent = '🎬';
+  if (locEl) locEl.textContent = 'Journey complete';
+  if (dateEl) {
+    // Find rarest species in the journey
+    let rarestSp = null;
+    let rarestRank = 0;
+    for (const sid of hudState.species) {
+      const sp = S.species.find(s => s.id === sid);
+      if (!sp) continue;
+      const r = rarityRank(sp.rarity);
+      if (r > rarestRank) { rarestRank = r; rarestSp = sp; }
+    }
+    dateEl.textContent = rarestSp
+      ? `Rarest: ${rarestSp.commonName || rarestSp.scientific || '—'}`
+      : `${hudState.km < 10 ? hudState.km.toFixed(1) : Math.round(hudState.km)} km journey`;
+  }
+  if ($('#trailHudProg')) $('#trailHudProg').style.width = '100%';
   // Keep HUD up longer so the user can replay or read stats
   setTimeout(() => hideTrailHud(), 8000);
   renderMapMarkers();
