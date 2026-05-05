@@ -2109,6 +2109,30 @@ textarea.fld-in { resize: vertical; min-height: 60px; }
   background: linear-gradient(90deg, var(--green), var(--gold));
   transition: width 0.2s linear;
 }
+.trail-hud-controls {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: 8px;
+}
+.thc {
+  background: rgba(212,165,116,0.06);
+  border: 1px solid rgba(212,165,116,0.16);
+  color: var(--text);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px; font-weight: 500;
+  letter-spacing: 0.06em;
+  border-radius: 8px;
+  padding: 6px 10px;
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+  min-width: 32px; min-height: 28px;
+}
+.thc:active { transform: scale(0.94); background: rgba(52,211,153,0.15); }
+.thc svg { width: 12px; height: 12px; display: block; }
+.thc-speed { font-variant-numeric: tabular-nums; min-width: 36px; }
+.thc-spacer { flex: 1; }
+.thc.on { background: rgba(52,211,153,0.18); border-color: rgba(52,211,153,0.4); color: var(--green); }
+.thc.thc-replay { color: var(--gold); border-color: rgba(212,165,116,0.4); }
 
 /* ========== Trail prepare overlay (tile prefetch indicator) ========== */
 .trail-prep {
@@ -3394,6 +3418,24 @@ body:has(#vS.active) .fab { display: none; }
       <div class="thst"><span class="thst-v" id="trailHudSightings">0</span><span class="thst-u">spotted</span></div>
     </div>
     <div class="trail-hud-progress"><div class="trail-hud-progress-fill" id="trailHudProg"></div></div>
+    <div class="trail-hud-controls">
+      <button class="thc thc-pause" id="trailHudPause" type="button" aria-label="Pause">
+        <span class="thc-icon-pause">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4h4v16H7zM13 4h4v16h-4z"/></svg>
+        </span>
+        <span class="thc-icon-play" style="display:none">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4l13 8-13 8z"/></svg>
+        </span>
+      </button>
+      <button class="thc thc-speed" id="trailHudSpeed" type="button" aria-label="Playback speed">1×</button>
+      <div class="thc-spacer"></div>
+      <button class="thc thc-skip" id="trailHudSkip" type="button" aria-label="Skip to end">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 4l11 8-11 8zM18 4h2v16h-2z"/></svg>
+      </button>
+      <button class="thc thc-replay" id="trailHudReplay" type="button" aria-label="Replay" style="display:none">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
+      </button>
+    </div>
   </div>
 </section>
 
@@ -6425,6 +6467,49 @@ function hideTrailPrep() { const el = $('#trailPrep'); if (el) el.classList.remo
 function showTrailHud() { const el = $('#trailHud'); if (el) el.classList.add('on'); }
 function hideTrailHud() { const el = $('#trailHud'); if (el) el.classList.remove('on'); }
 
+// Playback controls — speed multiplier compresses time for sleeps and the
+// per-frame animation step. Pause holds the segment progress at its current
+// fraction by remembering the wall-clock pause moment and adjusting start.
+let _trailPaused = false;
+let _trailSpeed = 1;
+let _trailSkipRequested = false;
+const TRAIL_SPEEDS = [1, 2, 4];
+function setTrailPaused(paused) {
+  _trailPaused = paused;
+  const btn = $('#trailHudPause');
+  if (btn) {
+    btn.querySelector('.thc-icon-pause').style.display = paused ? 'none' : '';
+    btn.querySelector('.thc-icon-play').style.display = paused ? '' : 'none';
+    btn.setAttribute('aria-label', paused ? 'Play' : 'Pause');
+  }
+}
+function setTrailSpeed(s) {
+  _trailSpeed = s;
+  const btn = $('#trailHudSpeed');
+  if (btn) btn.textContent = s + '×';
+}
+function cycleTrailSpeed() {
+  const idx = TRAIL_SPEEDS.indexOf(_trailSpeed);
+  setTrailSpeed(TRAIL_SPEEDS[(idx + 1) % TRAIL_SPEEDS.length]);
+}
+// Interruptible sleep that respects pause and speed without spinning.
+function trailSleep(ms, abortCtx) {
+  return new Promise(resolve => {
+    let remaining = ms;
+    let lastTick = performance.now();
+    const tick = () => {
+      if (abortCtx.aborted || _trailSkipRequested) { resolve(); return; }
+      const now = performance.now();
+      const dt = now - lastTick;
+      lastTick = now;
+      if (!_trailPaused) remaining -= dt * _trailSpeed;
+      if (remaining <= 0) { resolve(); return; }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+}
+
 // HUD updater — bumps numbers with a tactile animation when they change.
 function updateTrailHud(state, currentEntry) {
   const flagEl = $('#trailHudFlag');
@@ -6545,7 +6630,13 @@ async function drawTrail() {
   _trailHead = L.marker(allSegs[0].from, { icon: headIcon, interactive: false, keyboard: false, zIndexOffset: 1000 }).addTo(_trailLiveLayer);
 
   const ease = t => t < 0.5 ? 2*t*t : 1 - Math.pow(-2*t + 2, 2)/2;
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const sleep = ms => trailSleep(ms, abortCtx);
+
+  // Reset playback state for this run
+  _trailSkipRequested = false;
+  setTrailPaused(false);
+  // Persist last-chosen speed across runs but default to 1× on first
+  if (!_trailSpeed) setTrailSpeed(1);
 
   const ringAt = (latlng) => {
     const ringIcon = L.divIcon({
@@ -6563,11 +6654,22 @@ async function drawTrail() {
       lineCap: 'round', lineJoin: 'round', interactive: false
     }).addTo(trailLayer);
     const FOLLOW = 0.09;
-    const start = performance.now();
     return new Promise(resolve => {
+      let elapsed = 0;
+      let lastFrame = performance.now();
       const step = () => {
         if (abortCtx.aborted) { resolve(); return; }
-        const elapsed = performance.now() - start;
+        if (_trailSkipRequested) {
+          // Snap to end so the polyline is fully drawn before skip-out
+          poly.setLatLngs([seg.from, seg.to]);
+          if (_trailHead) _trailHead.setLatLng(seg.to);
+          resolve();
+          return;
+        }
+        const now = performance.now();
+        const dt = now - lastFrame;
+        lastFrame = now;
+        if (!_trailPaused) elapsed += dt * _trailSpeed;
         const t = Math.min(1, elapsed / budgetMs);
         const e = ease(t);
         const lat = seg.from[0] + (seg.to[0] - seg.from[0]) * e;
@@ -6600,6 +6702,12 @@ async function drawTrail() {
   // Seed with first entry so HUD opens with full info, not blanks
   if (allSegs[0].fromEntry?.speciesId) hudState.species.add(allSegs[0].fromEntry.speciesId);
   showTrailHud();
+  // Reset playback controls visibility for a fresh run
+  const _btn = id => $(id);
+  if (_btn('#trailHudReplay')) _btn('#trailHudReplay').style.display = 'none';
+  if (_btn('#trailHudPause')) _btn('#trailHudPause').style.display = '';
+  if (_btn('#trailHudSpeed')) _btn('#trailHudSpeed').style.display = '';
+  if (_btn('#trailHudSkip')) _btn('#trailHudSkip').style.display = '';
   updateTrailHud(hudState, allSegs[0].fromEntry);
 
   _mapSuspendRecluster = true;
@@ -6607,16 +6715,19 @@ async function drawTrail() {
   await sleep(750);
   if (abortCtx.aborted) return;
 
-  for (let ci = 0; ci < chapters.length; ci++) {
+  let skipping = false;
+  outer: for (let ci = 0; ci < chapters.length; ci++) {
     if (abortCtx.aborted) return;
+    if (skipping) break;
     const chapter = chapters[ci];
     if (ci > 0 && _trailHead) {
       const el = _trailHead.getElement();
       if (el) { el.style.transition = 'opacity 0.3s'; el.style.opacity = '0'; }
       await sleep(320);
       if (abortCtx.aborted) return;
+      if (_trailSkipRequested) { skipping = true; }
       _trailHead.setLatLng(chapter.segs[0].from);
-      mapInstance.flyTo(chapter.segs[0].from, targetZoom, { duration: 0.9 });
+      if (!skipping) mapInstance.flyTo(chapter.segs[0].from, targetZoom, { duration: 0.9 });
       await sleep(550);
       if (el) el.style.opacity = '1';
       await sleep(180);
@@ -6624,8 +6735,9 @@ async function drawTrail() {
     ringAt(chapter.segs[0].from);
     if (chapter.segs[0].fromEntry) updateTrailHud(hudState, chapter.segs[0].fromEntry);
 
-    for (const seg of chapter.segs) {
+    for (let si = 0; si < chapter.segs.length; si++) {
       if (abortCtx.aborted) return;
+      const seg = chapter.segs[si];
       const segBudget = Math.max(420, Math.min(2200, totalDurMs * (seg.dist / totalDist)));
       await animateSegment(seg, segBudget);
       if (abortCtx.aborted) return;
@@ -6635,6 +6747,27 @@ async function drawTrail() {
       if (seg.toEntry?.speciesId) hudState.species.add(seg.toEntry.speciesId);
       hudState.doneSegs += 1;
       updateTrailHud(hudState, seg.toEntry);
+      if (_trailSkipRequested) {
+        // Draw remaining segments instantly so the user sees the full picture
+        skipping = true;
+        for (let cj = ci; cj < chapters.length; cj++) {
+          const startK = (cj === ci) ? si + 1 : 0;
+          for (let sk = startK; sk < chapters[cj].segs.length; sk++) {
+            const s2 = chapters[cj].segs[sk];
+            L.polyline([s2.from, s2.to], {
+              renderer: getTrailRenderer(),
+              color: s2.color, weight: 3.5, opacity: 0.9,
+              lineCap: 'round', lineJoin: 'round', interactive: false
+            }).addTo(trailLayer);
+            hudState.km += s2.dist;
+            hudState.sightings += 1;
+            if (s2.toEntry?.speciesId) hudState.species.add(s2.toEntry.speciesId);
+            hudState.doneSegs += 1;
+          }
+        }
+        if (allSegs.length) updateTrailHud(hudState, allSegs[allSegs.length - 1].toEntry);
+        break outer;
+      }
       await sleep(Math.max(110, Math.min(280, segBudget * 0.13)));
     }
   }
@@ -6652,8 +6785,13 @@ async function drawTrail() {
   if (_trailLiveLayer && mapInstance) { try { mapInstance.removeLayer(_trailLiveLayer); } catch(e) {} _trailLiveLayer = null; }
   _trailAnimAbort = null;
   _mapSuspendRecluster = false;
-  // Linger HUD for a beat so the user can read final stats
-  setTimeout(() => hideTrailHud(), 2400);
+  // Swap controls to "done" state — replay button replaces pause/speed/skip
+  if ($('#trailHudPause')) $('#trailHudPause').style.display = 'none';
+  if ($('#trailHudSpeed')) $('#trailHudSpeed').style.display = 'none';
+  if ($('#trailHudSkip')) $('#trailHudSkip').style.display = 'none';
+  if ($('#trailHudReplay')) $('#trailHudReplay').style.display = '';
+  // Keep HUD up longer so the user can replay or read stats
+  setTimeout(() => hideTrailHud(), 8000);
   renderMapMarkers();
 }
 
@@ -7695,6 +7833,15 @@ $('#trailToggle').onclick = async () => {
   $('#trailToggle').classList.toggle('on', S.settings.showTrail);
   drawTrail();
   toast(S.settings.showTrail ? 'Trail on' : 'Trail off');
+};
+$('#trailHudPause').onclick = () => { setTrailPaused(!_trailPaused); vibrate(4); };
+$('#trailHudSpeed').onclick = () => { cycleTrailSpeed(); vibrate(4); };
+$('#trailHudSkip').onclick = () => { _trailSkipRequested = true; vibrate(6); };
+$('#trailHudReplay').onclick = async () => {
+  vibrate(8);
+  S.settings.showTrail = true;
+  $('#trailToggle').classList.toggle('on', true);
+  drawTrail();
 };
 
 document.addEventListener('keydown', ev => {
