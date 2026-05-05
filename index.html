@@ -7872,16 +7872,37 @@ function openLightbox(startIdx) {
   $('#lbNext').disabled = S.lbPhotos.length <= 1;
   $('#lb').classList.add('open');
 }
+function lbStep(dir) {
+  if (!S.lbPhotos.length) return;
+  S.lbIndex = (S.lbIndex + dir + S.lbPhotos.length) % S.lbPhotos.length;
+  $('#lbImg').src = S.lbPhotos[S.lbIndex].url;
+}
 $('#lbClose').onclick = () => $('#lb').classList.remove('open');
-$('#lbPrev').onclick = () => {
-  S.lbIndex = (S.lbIndex - 1 + S.lbPhotos.length) % S.lbPhotos.length;
-  $('#lbImg').src = S.lbPhotos[S.lbIndex].url;
-};
-$('#lbNext').onclick = () => {
-  S.lbIndex = (S.lbIndex + 1) % S.lbPhotos.length;
-  $('#lbImg').src = S.lbPhotos[S.lbIndex].url;
-};
+$('#lbPrev').onclick = () => lbStep(-1);
+$('#lbNext').onclick = () => lbStep(1);
 $('#lb').onclick = ev => { if (ev.target.id === 'lb') $('#lb').classList.remove('open'); };
+// Swipe between photos when lightbox is open
+(() => {
+  const lb = $('#lb');
+  if (!lb) return;
+  let startX = 0, startY = 0, tracking = false;
+  lb.addEventListener('touchstart', ev => {
+    if (!lb.classList.contains('open')) return;
+    if (S.lbPhotos.length < 2) return;
+    startX = ev.touches[0].clientX;
+    startY = ev.touches[0].clientY;
+    tracking = true;
+  }, { passive: true });
+  lb.addEventListener('touchend', ev => {
+    if (!tracking) return;
+    tracking = false;
+    const dx = ev.changedTouches[0].clientX - startX;
+    const dy = ev.changedTouches[0].clientY - startY;
+    // Only horizontal swipes count, and they have to clear vertical noise
+    if (Math.abs(dx) < 50 || Math.abs(dx) < Math.abs(dy)) return;
+    lbStep(dx < 0 ? 1 : -1);
+  });
+})();
 
 // ===== Species sheet =====
 async function openSpeciesSheet(spId) {
@@ -8709,6 +8730,11 @@ $('#trailHudShare').onclick = () => { vibrate(6); shareJourneyText(); };
 $('#trailHudClose').onclick = () => { vibrate(4); hideTrailHud(); };
 
 document.addEventListener('keydown', ev => {
+  // Arrow keys flip between lightbox photos when it's open
+  if ($('#lb').classList.contains('open')) {
+    if (ev.key === 'ArrowLeft') { lbStep(-1); ev.preventDefault(); return; }
+    if (ev.key === 'ArrowRight') { lbStep(1); ev.preventDefault(); return; }
+  }
   if (ev.key !== 'Escape') return;
   if ($('#exifDebugModal').classList.contains('open')) $('#exifDebugModal').classList.remove('open');
   else if ($('#shareHelpModal').classList.contains('open')) closeShareHelp();
