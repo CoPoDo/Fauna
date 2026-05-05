@@ -6738,10 +6738,13 @@ function cycleTileStyle() {
 
 function initMap() {
   if (mapInstance || typeof L === 'undefined') return;
-  // zoomSnap: 0 enables fractional zoom levels so trail playback can smoothly
-  // interpolate camera zoom per segment (close-up for tight stops, wide for
-  // cross-country jumps) instead of stepping in jarring integer increments.
-  mapInstance = L.map('mapC', { zoomControl: true, attributionControl: false, zoomSnap: 0 }).setView([13.75, 100.5], 4);
+  // zoomSnap: 0 — fractional zoom so camera can settle at exact per-segment
+  // framing values without integer snapping.
+  // zoomAnimationThreshold: 20 — Leaflet defaults to 4, above which it falls
+  // back from CSS-transform zoom (smooth, no tile reload) to a hard reset.
+  // Raising the threshold ensures CSS animation is used for all zoom changes
+  // the trail makes, which is how we avoid white flashing during transitions.
+  mapInstance = L.map('mapC', { zoomControl: true, attributionControl: false, zoomSnap: 0, zoomAnimationThreshold: 20 }).setView([13.75, 100.5], 4);
   applyTileStyle(S.settings.mapStyle || 'dark');
   mapInstance.on('click', () => $('#mapSh').classList.remove('open'));
   // Re-cluster markers whenever zoom changes so they don't visually overlap/flash
@@ -7568,17 +7571,27 @@ async function drawTrail() {
       const restFloor = segCount > 60 ? 50 : 110;
       const baseRest = Math.max(restFloor, Math.min(280, segBudget * 0.13));
       const restMs = arrivedRare ? baseRest + 380 : baseRest;
-      // Pre-zoom for the next segment during the rest window, so the zoom
-      // snap happens while the camera is stationary (ring animation playing)
-      // rather than mid-movement. animateSegment then starts at stable zoom.
+      // Pre-zoom for the next segment during the rest window. We use Leaflet's
+      // CSS-transform zoom animation (no tile flush, old tiles just scale) and
+      // run it in parallel with the rest sleep so it adds no extra time when
+      // rest is long enough to absorb it. animateSegment captures segZoom after
+      // both settle, guaranteeing zoom is stable before panning begins.
       const nextSeg = si + 1 < chapter.segs.length ? chapter.segs[si + 1] : null;
       if (nextSeg && !_trailSkipRequested) {
         const nextZoom = zoomForSegment(nextSeg);
         if (Math.abs(mapInstance.getZoom() - nextZoom) > 0.3) {
-          mapInstance.setZoom(nextZoom, { animate: false });
+          const zoomSettled = new Promise(resolve => {
+            mapInstance.once('zoomend', resolve);
+            mapInstance.setZoom(nextZoom, { animate: true });
+            setTimeout(resolve, 450); // safety fallback if zoomend misfires
+          });
+          await Promise.all([zoomSettled, sleep(restMs)]);
+        } else {
+          await sleep(restMs);
         }
+      } else {
+        await sleep(restMs);
       }
-      await sleep(restMs);
     }
   }
 
