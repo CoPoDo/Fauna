@@ -7220,17 +7220,51 @@ async function drawTrail() {
   const myTrailLayer = trailLayer;
   const myLiveLayer = _trailLiveLayer;
 
-  // === Pre-warm tiles along the entire trail at the camera's working zoom ===
+  // Hoist the zoom helpers above the prewarm so it can ask each segment
+  // what zoom it'll play at and prefetch tiles for those exact levels.
+  const SEG_FRAME_PAD = [220, 220];
+  const SEG_FRAME_MAX_ZOOM = 16.5;
+  const SEG_FRAME_MIN_ZOOM = 3;
+  const zoomForSegment = (seg) => {
+    if (!seg || !seg.from || !seg.to) return 11;
+    if (Math.abs(seg.from[0] - seg.to[0]) < 1e-5 && Math.abs(seg.from[1] - seg.to[1]) < 1e-5) return SEG_FRAME_MAX_ZOOM;
+    try {
+      const sb = L.latLngBounds([seg.from, seg.to]);
+      const fit = mapInstance.getBoundsZoom(sb, false, SEG_FRAME_PAD);
+      return Math.max(SEG_FRAME_MIN_ZOOM, Math.min(SEG_FRAME_MAX_ZOOM, fit));
+    } catch (e) { return 11; }
+  };
+
+  // === Pre-warm tiles at every zoom level the camera will actually visit ===
+  // The old code prewarmed one or two zooms across the WHOLE trail bounds,
+  // which left close-up segments (zoom 14+) with grey checkerboard during
+  // playback. Now we group segments by their target zoom and prewarm each
+  // group's local bounds at that zoom — and at the integer zooms straddling
+  // any fractional zoom, since zoomSnap: 0 means tiles for both neighbours
+  // can be visible mid-transition. All passes run in parallel so the
+  // total wait stays around one tile-fetch budget regardless of how many
+  // levels we cover.
   const allPts = allSegs.flatMap(s => [s.from, s.to]);
   const bounds = L.latLngBounds(allPts);
-  // Working zoom: cap at 11 so tile prefetch stays bounded; choose the
-  // largest zoom that still fits all points in viewport so the camera
-  // doesn't have to zoom in mid-flight (which would force fresh tile fetches).
-  let targetZoom = 9;
+  const zoomBuckets = new Map(); // integer zoom → array of segments
+  const addBucket = (z, seg) => {
+    if (!zoomBuckets.has(z)) zoomBuckets.set(z, []);
+    zoomBuckets.get(z).push(seg);
+  };
+  for (const s of allSegs) {
+    const sz = zoomForSegment(s);
+    // Cover both integer neighbours so fractional camera zoom transitions
+    // smoothly without falling between two un-loaded tile sets.
+    addBucket(Math.max(SEG_FRAME_MIN_ZOOM, Math.floor(sz)), s);
+    addBucket(Math.min(SEG_FRAME_MAX_ZOOM, Math.ceil(sz)), s);
+  }
+  // Always include an overview level for the closing flyToBounds reveal.
+  let overviewZoom = 8;
   try {
-    const fitZ = mapInstance.getBoundsZoom(bounds, false, [80, 80]);
-    targetZoom = Math.min(11, Math.max(3, fitZ));
+    overviewZoom = Math.max(3, Math.min(11, mapInstance.getBoundsZoom(bounds, false, [80, 80])));
   } catch (e) {}
+  if (!zoomBuckets.has(overviewZoom)) zoomBuckets.set(overviewZoom, []);
+
   showTrailPrep();
   const bailOnAbort = () => {
     hideTrailPrep();
@@ -7240,10 +7274,23 @@ async function drawTrail() {
     if (_trailLiveLayer === myLiveLayer) _trailLiveLayer = null;
     if (_trailAnimAbort === abortCtx) _trailAnimAbort = null;
   };
-  await prewarmTiles(mapInstance, bounds, targetZoom, 4500);
-  if (abortCtx.aborted) { bailOnAbort(); return; }
-  // Also prewarm one zoom level deeper for the camera-follow phase
-  if (targetZoom < 11) await prewarmTiles(mapInstance, bounds, targetZoom + 1, 3500);
+
+  const prewarmJobs = [];
+  for (const [zoom, segs] of zoomBuckets) {
+    const z = Math.round(zoom);
+    let zb;
+    if (segs.length) {
+      // Tighter bounds: only the parts of the trail played at this zoom.
+      // For high zooms with sparse segments this prevents a 5000-tile
+      // prefetch of half the world.
+      const pts = segs.flatMap(s => [s.from, s.to]);
+      zb = L.latLngBounds(pts).pad(0.15);
+    } else {
+      zb = bounds;
+    }
+    prewarmJobs.push(prewarmTiles(mapInstance, zb, z, 4500));
+  }
+  await Promise.all(prewarmJobs);
   if (abortCtx.aborted) { bailOnAbort(); return; }
   hideTrailPrep();
 
@@ -7270,26 +7317,6 @@ async function drawTrail() {
     });
     const m = L.marker(latlng, { icon: ringIcon, interactive: false, keyboard: false, zIndexOffset: 999 }).addTo(_trailLiveLayer);
     setTimeout(() => { try { _trailLiveLayer && _trailLiveLayer.removeLayer(m); } catch (e) {} }, 900);
-  };
-
-  // Compute the zoom level that frames a single segment with reasonable
-  // padding. Returned value is fractional (zoomSnap: 0 in initMap allows
-  // smooth interpolation between integer zoom levels). Cap floor and ceiling
-  // so we never zoom out past continental view (3) or in past street level
-  // (16.5) — those extremes look ugly and load enormous tile counts.
-  const zoomForSegment = (seg) => {
-    if (!seg) return 11;
-    const a = seg.from, b = seg.to;
-    if (!a || !b) return 11;
-    // Degenerate "0-distance" or near-identical points → zoom in tight
-    if (Math.abs(a[0] - b[0]) < 1e-5 && Math.abs(a[1] - b[1]) < 1e-5) return 16.5;
-    try {
-      const segBounds = L.latLngBounds([a, b]);
-      const fit = mapInstance.getBoundsZoom(segBounds, false, [220, 220]);
-      // Slightly overshoot the natural fit so both endpoints + a bit of
-      // breathing room are comfortably inside the viewport.
-      return Math.max(3, Math.min(16.5, fit - 0.4));
-    } catch (e) { return 11; }
   };
 
   const animateSegment = async (seg, budgetMs) => {
@@ -7342,9 +7369,15 @@ async function drawTrail() {
         const eLead = ease(tLead);
         const leadLat = seg.from[0] + (seg.to[0] - seg.from[0]) * eLead;
         const leadLng = seg.from[1] + (seg.to[1] - seg.from[1]) * eLead;
-        // Smoothly slide zoom from where the camera was to this segment's
-        // ideal framing. Eased so transitions feel deliberate, not jerky.
-        const z = startZoom + (targetSegZoom - startZoom) * e;
+        // Slide zoom from where the camera was to this segment's ideal
+        // framing. Zoom transition completes earlier than position
+        // (zoomT runs from 0→1 over the first 60% of the segment) so the
+        // last leg of the head's animation plays at stable zoom. Otherwise
+        // a big inter-zoom delta keeps shifting scale right as the head
+        // approaches its destination.
+        const zoomT = Math.min(1, t / 0.6);
+        const ez = zoomT < 0.5 ? 2*zoomT*zoomT : 1 - Math.pow(-2*zoomT + 2, 2)/2;
+        const z = startZoom + (targetSegZoom - startZoom) * ez;
         const c = mapInstance.getCenter();
         const nLat = c.lat + (leadLat - c.lat) * FOLLOW;
         const nLng = c.lng + (leadLng - c.lng) * FOLLOW;
@@ -7384,14 +7417,12 @@ async function drawTrail() {
   updateTrailHud(hudState, allSegs[0].fromEntry);
 
   _mapSuspendRecluster = true;
-  // Frame the opening on the FIRST segment's bounds so the camera lands at
-  // the right scale for that hop — close-up if it's a short walk between
-  // park bench sightings, wide if it's a 200km drive between cities. The
-  // animateSegment() that follows will smoothly slide zoom per-segment from
-  // here on out.
+  // Frame the opening on the FIRST segment's bounds at exactly the same zoom
+  // animateSegment will target — same SEG_FRAME_PAD / SEG_FRAME_MAX_ZOOM —
+  // so the first segment plays with zero zoom drift on frame one.
   const firstSeg = allSegs[0];
   mapInstance.flyToBounds(L.latLngBounds([firstSeg.from, firstSeg.to]), {
-    padding: [180, 180], duration: 0.8, maxZoom: 16
+    padding: SEG_FRAME_PAD, duration: 0.8, maxZoom: SEG_FRAME_MAX_ZOOM
   });
   // Wait for the flyTo to land before starting the animation; otherwise the
   // first segment plays while the camera is still drifting toward the start.
@@ -7430,14 +7461,13 @@ async function drawTrail() {
       if (abortCtx.aborted) return;
       if (_trailSkipRequested) { skipping = true; }
       _trailHead.setLatLng(chapter.segs[0].from);
-      // Frame the new chapter on its first segment's bounds so we land at
-      // the correct scale for that trip's first leg. 0.6s duration stays
-      // shorter than the 620+220ms awaited gap below so the camera fully
-      // lands before the segment animator's per-frame setView takes over.
+      // Frame the new chapter on its first segment at the SAME zoom math
+      // animateSegment uses, so there's no startZoom-vs-targetSegZoom
+      // mismatch on frame one of the new chapter.
       if (!skipping) {
         const nxt = chapter.segs[0];
         mapInstance.flyToBounds(L.latLngBounds([nxt.from, nxt.to]), {
-          padding: [180, 180], duration: 0.6, maxZoom: 16
+          padding: SEG_FRAME_PAD, duration: 0.6, maxZoom: SEG_FRAME_MAX_ZOOM
         });
       }
       await sleep(620);
