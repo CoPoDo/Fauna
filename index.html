@@ -7263,31 +7263,36 @@ async function drawTrail() {
   const myTrailLayer = trailLayer;
   const myLiveLayer = _trailLiveLayer;
 
-  // Hoist the zoom helpers above the prewarm so it can ask each segment
-  // what zoom it'll play at and prefetch tiles for those exact levels.
+  // Padding and zoom clamps used by every flyToBounds + the prewarm zoom calc.
   const SEG_FRAME_PAD = [220, 220];
   const SEG_FRAME_MAX_ZOOM = 16.5;
   const SEG_FRAME_MIN_ZOOM = 3;
-  const zoomForSegment = (seg) => {
-    if (!seg || !seg.from || !seg.to) return 11;
-    if (Math.abs(seg.from[0] - seg.to[0]) < 1e-5 && Math.abs(seg.from[1] - seg.to[1]) < 1e-5) return SEG_FRAME_MAX_ZOOM;
+
+  // === Pre-warm tiles at the chapter zoom levels ===
+  // Each chapter (trip) gets ONE zoom that fits all its segments. Within a
+  // chapter the zoom never changes — segments just pan at that fixed zoom.
+  // This is the key fix: the old approach changed zoom per segment, which
+  // either flashed white tiles (instant snap) or created visible zoom-pause
+  // moments (CSS animation between segments). With chapter zoom fixed, the
+  // camera glides smoothly through every sighting in the trip.
+  const zoomForBounds = (b) => {
     try {
-      const sb = L.latLngBounds([seg.from, seg.to]);
-      const fit = mapInstance.getBoundsZoom(sb, false, SEG_FRAME_PAD);
+      // Leaflet's flyToBounds applies padding to BOTH sides (paddingTL + paddingBR),
+      // so the effective fit-padding is double SEG_FRAME_PAD. Matching that here
+      // means prewarmed tiles match the zoom Leaflet actually settles at.
+      const fit = mapInstance.getBoundsZoom(b, false, [SEG_FRAME_PAD[0] * 2, SEG_FRAME_PAD[1] * 2]);
       return Math.max(SEG_FRAME_MIN_ZOOM, Math.min(SEG_FRAME_MAX_ZOOM, fit));
     } catch (e) { return 11; }
   };
-
-  // === Pre-warm tiles at the specific zoom levels each segment will use ===
-  // Zoom is now set once per segment (not interpolated every frame), so we
-  // only need tiles at the discrete zoom levels segments will actually stop at.
-  // The old approach prewarmed every integer from the global min to max zoom
-  // (up to 14 levels) to cover the continuous interpolation path — now
-  // unnecessary and a major cause of the long loading delay.
+  chapters.forEach(c => {
+    const pts = c.segs.flatMap(s => [s.from, s.to]);
+    c.bounds = L.latLngBounds(pts);
+    c.zoom = zoomForBounds(c.bounds);
+  });
   const allPts = allSegs.flatMap(s => [s.from, s.to]);
   const bounds = L.latLngBounds(allPts);
+  const finalZoom = zoomForBounds(bounds);
 
-  const usedZooms = [...new Set(allSegs.map(s => Math.round(zoomForSegment(s))))];
   showTrailPrep();
   const bailOnAbort = () => {
     hideTrailPrep();
@@ -7298,18 +7303,13 @@ async function drawTrail() {
     if (_trailAnimAbort === abortCtx) _trailAnimAbort = null;
   };
 
+  // One prewarm per chapter zoom + one for the closing reveal. Far fewer jobs
+  // than per-segment prewarm, so the loading indicator clears much faster.
   const prewarmJobs = [];
-  for (const z of usedZooms) {
-    prewarmJobs.push(prewarmTiles(mapInstance, bounds, z, 6000));
-    if (z > 9) {
-      const localSegs = allSegs.filter(s => Math.round(zoomForSegment(s)) === z);
-      if (localSegs.length) {
-        const pts = localSegs.flatMap(s => [s.from, s.to]);
-        const zb = L.latLngBounds(pts).pad(0.3);
-        prewarmJobs.push(prewarmTiles(mapInstance, zb, z, 6000));
-      }
-    }
+  for (const ch of chapters) {
+    prewarmJobs.push(prewarmTiles(mapInstance, ch.bounds, Math.round(ch.zoom), 6000));
   }
+  prewarmJobs.push(prewarmTiles(mapInstance, bounds, Math.round(finalZoom), 6000));
   await Promise.all(prewarmJobs);
   if (abortCtx.aborted) { bailOnAbort(); return; }
   hideTrailPrep();
@@ -7362,13 +7362,13 @@ async function drawTrail() {
       color: seg.color, weight: 3.4, opacity: 0.95,
       lineCap: 'round', lineJoin: 'round', interactive: false
     }).addTo(trailLayer);
-    const BASE_FOLLOW = 0.15;
-    // Capture zoom once at segment start. The calling loop pre-sets zoom
-    // during the rest window before each segment, so this never changes
-    // inside the RAF loop — Leaflet never flushes its tile grid mid-pan.
-    // The old approach interpolated zoom every frame, crossing tile-zoom
-    // boundaries (Math.round crossings at 0.5 intervals) repeatedly and
-    // triggering full tile-grid reloads on each crossing → white flash.
+    // Tighter follow keeps the head near the centre of the viewport without
+    // the slingshot from the old lookahead-based tracking. Combined with the
+    // frame-rate-independent lerp below, motion is smooth at any FPS.
+    const BASE_FOLLOW = 0.2;
+    // Zoom is set by flyToBounds at chapter start and never changes mid-chapter,
+    // so segZoom is the same every frame → Leaflet never rebuilds its tile grid
+    // → no white flashing during the pan animation.
     const segZoom = mapInstance.getZoom();
     return new Promise(resolve => {
       let elapsed = 0;
@@ -7438,11 +7438,10 @@ async function drawTrail() {
   updateTrailHud(hudState, allSegs[0].fromEntry);
 
   _mapSuspendRecluster = true;
-  // Frame the opening on the FIRST segment's bounds at exactly the same zoom
-  // animateSegment will target — same SEG_FRAME_PAD / SEG_FRAME_MAX_ZOOM —
-  // so the first segment plays with zero zoom drift on frame one.
-  const firstSeg = allSegs[0];
-  mapInstance.flyToBounds(L.latLngBounds([firstSeg.from, firstSeg.to]), {
+  // Open by framing the entire first chapter — every segment in that chapter
+  // plays at this same zoom, so panning is smooth and zoom never changes
+  // mid-trip. This is what eliminates the white-flash/slingshot problems.
+  mapInstance.flyToBounds(chapters[0].bounds, {
     padding: SEG_FRAME_PAD, duration: 0.8, maxZoom: SEG_FRAME_MAX_ZOOM
   });
   // Wait for the flyTo to land before starting the animation; otherwise the
@@ -7482,12 +7481,10 @@ async function drawTrail() {
       if (abortCtx.aborted) return;
       if (_trailSkipRequested) { skipping = true; }
       _trailHead.setLatLng(chapter.segs[0].from);
-      // Frame the new chapter on its first segment at the same zoom
-      // animateSegment will capture, so the segment starts at stable zoom
-      // with no tile reload on its first frame.
+      // Frame the entire new chapter — its zoom is fixed for all segments
+      // within it, so animateSegment captures stable zoom on every frame.
       if (!skipping) {
-        const nxt = chapter.segs[0];
-        mapInstance.flyToBounds(L.latLngBounds([nxt.from, nxt.to]), {
+        mapInstance.flyToBounds(chapter.bounds, {
           padding: SEG_FRAME_PAD, duration: 0.6, maxZoom: SEG_FRAME_MAX_ZOOM
         });
       }
@@ -7567,31 +7564,11 @@ async function drawTrail() {
         break outer;
       }
       // Rest between segments scales down for big libraries so the playback
-      // doesn't accumulate hundreds of dead frames.
+      // doesn't accumulate hundreds of dead frames. Chapter zoom is fixed
+      // so no zoom logic here — just a brief breath between sightings.
       const restFloor = segCount > 60 ? 50 : 110;
       const baseRest = Math.max(restFloor, Math.min(280, segBudget * 0.13));
-      const restMs = arrivedRare ? baseRest + 380 : baseRest;
-      // Pre-zoom for the next segment during the rest window. We use Leaflet's
-      // CSS-transform zoom animation (no tile flush, old tiles just scale) and
-      // run it in parallel with the rest sleep so it adds no extra time when
-      // rest is long enough to absorb it. animateSegment captures segZoom after
-      // both settle, guaranteeing zoom is stable before panning begins.
-      const nextSeg = si + 1 < chapter.segs.length ? chapter.segs[si + 1] : null;
-      if (nextSeg && !_trailSkipRequested) {
-        const nextZoom = zoomForSegment(nextSeg);
-        if (Math.abs(mapInstance.getZoom() - nextZoom) > 0.3) {
-          const zoomSettled = new Promise(resolve => {
-            mapInstance.once('zoomend', resolve);
-            mapInstance.setZoom(nextZoom, { animate: true });
-            setTimeout(resolve, 450); // safety fallback if zoomend misfires
-          });
-          await Promise.all([zoomSettled, sleep(restMs)]);
-        } else {
-          await sleep(restMs);
-        }
-      } else {
-        await sleep(restMs);
-      }
+      await sleep(arrivedRare ? baseRest + 380 : baseRest);
     }
   }
 
