@@ -1458,6 +1458,7 @@ body::before {
 #vMap { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: calc(64px + env(safe-area-inset-bottom)); z-index: 30; background: var(--bg); }
 #vMap.active { display: block; }
 #mapC { position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 1; }
+#mapC .leaflet-container { background: #191a1a !important; }
 #mapC .leaflet-control-zoom { background: var(--bg-card); border: 1px solid var(--border) !important; margin-bottom: 20px !important; margin-left: 14px !important; }
 #mapC .leaflet-control-zoom a { background: var(--bg-card) !important; color: var(--text) !important; border-bottom: 1px solid var(--border) !important; }
 
@@ -6716,7 +6717,7 @@ function applyTileStyle(name) {
   if (!mapInstance) return;
   const style = TILE_STYLES[name] || TILE_STYLES.dark;
   if (_activeTileLayer) { try { mapInstance.removeLayer(_activeTileLayer); } catch (e) {} }
-  const opts = { maxZoom: style.maxZoom };
+  const opts = { maxZoom: style.maxZoom, keepBuffer: 3 };
   if (style.subdomains) opts.subdomains = style.subdomains;
   _activeTileLayer = L.tileLayer(style.url, opts).addTo(mapInstance);
   // Persist only when the user-visible setting actually changes; otherwise
@@ -7274,33 +7275,16 @@ async function drawTrail() {
     } catch (e) { return 11; }
   };
 
-  // === Pre-warm tiles at every zoom level the camera will actually visit ===
-  // The camera transitions zoom continuously inside each segment (from the
-  // previous segment's framing zoom to this segment's framing zoom). That
-  // means tiles are needed at EVERY integer zoom level between the
-  // min and max segment zooms — not just the segment-target zooms.
-  // Old code only prewarmed the targets, so the screenshot showed a
-  // grey checkerboard mid-segment whenever the camera traversed an
-  // intermediate zoom that we hadn't covered.
+  // === Pre-warm tiles at the specific zoom levels each segment will use ===
+  // Zoom is now set once per segment (not interpolated every frame), so we
+  // only need tiles at the discrete zoom levels segments will actually stop at.
+  // The old approach prewarmed every integer from the global min to max zoom
+  // (up to 14 levels) to cover the continuous interpolation path — now
+  // unnecessary and a major cause of the long loading delay.
   const allPts = allSegs.flatMap(s => [s.from, s.to]);
   const bounds = L.latLngBounds(allPts);
 
-  // Compute every zoom the camera will visit: each segment's framing zoom
-  // PLUS the opening flyTo's source (current map zoom) PLUS the closing
-  // reveal's target. Camera transitions through every integer zoom between
-  // these, so prewarm has to cover the whole range — otherwise
-  // mid-transition the user sees grey checkerboard at unprewarmed levels.
-  const segZooms = allSegs.map(zoomForSegment);
-  const segMinZ = Math.min(...segZooms);
-  const segMaxZ = Math.max(...segZooms);
-  const currentMapZ = mapInstance.getZoom();
-  let closingZ = 8;
-  try {
-    closingZ = Math.max(SEG_FRAME_MIN_ZOOM, Math.min(SEG_FRAME_MAX_ZOOM, mapInstance.getBoundsZoom(bounds, false, SEG_FRAME_PAD)));
-  } catch (e) {}
-  const minInt = Math.max(SEG_FRAME_MIN_ZOOM, Math.floor(Math.min(segMinZ, closingZ, currentMapZ)));
-  const maxInt = Math.min(Math.ceil(SEG_FRAME_MAX_ZOOM), Math.ceil(Math.max(segMaxZ, closingZ, currentMapZ)));
-
+  const usedZooms = [...new Set(allSegs.map(s => Math.round(zoomForSegment(s))))];
   showTrailPrep();
   const bailOnAbort = () => {
     hideTrailPrep();
@@ -7311,22 +7295,15 @@ async function drawTrail() {
     if (_trailAnimAbort === abortCtx) _trailAnimAbort = null;
   };
 
-  // For each integer zoom in the visited range, fire a full-bounds prewarm
-  // (prewarmTiles bails internally if the tile count exceeds 800 — fine for
-  // most trails, bails harmlessly for continental ones at high zoom). PLUS
-  // for high zooms (>9) fire a segment-local prewarm so transitions involving
-  // close-up segments still have tiles when the full-bounds pass bails on
-  // big libraries. Both run in parallel; the browser cache dedupes
-  // overlapping URLs at no cost.
   const prewarmJobs = [];
-  for (let z = minInt; z <= maxInt; z++) {
-    prewarmJobs.push(prewarmTiles(mapInstance, bounds, z, 8000));
+  for (const z of usedZooms) {
+    prewarmJobs.push(prewarmTiles(mapInstance, bounds, z, 6000));
     if (z > 9) {
-      const localSegs = allSegs.filter(s => Math.abs(zoomForSegment(s) - z) <= 2);
+      const localSegs = allSegs.filter(s => Math.round(zoomForSegment(s)) === z);
       if (localSegs.length) {
         const pts = localSegs.flatMap(s => [s.from, s.to]);
-        const zb = L.latLngBounds(pts).pad(0.2);
-        prewarmJobs.push(prewarmTiles(mapInstance, zb, z, 8000));
+        const zb = L.latLngBounds(pts).pad(0.3);
+        prewarmJobs.push(prewarmTiles(mapInstance, zb, z, 6000));
       }
     }
   }
@@ -7382,17 +7359,14 @@ async function drawTrail() {
       color: seg.color, weight: 3.4, opacity: 0.95,
       lineCap: 'round', lineJoin: 'round', interactive: false
     }).addTo(trailLayer);
-    // Base follow constant — tight enough for the head to stay near the
-    // viewport centre at 1× speed without feeling rigid.
-    const BASE_FOLLOW = 0.18;
-    // Smaller lookahead now that the camera tracks tightly — still enough
-    // to anticipate the head's direction without the camera shooting past.
-    const LOOKAHEAD_MS = 120;
-    // Per-segment target zoom: tight close-ups for nearby stops, wide views
-    // for cross-country jumps. Smoothly interpolates from the camera's
-    // current zoom over the first 60% of segment duration.
-    const startZoom = mapInstance.getZoom();
-    const targetSegZoom = zoomForSegment(seg);
+    const BASE_FOLLOW = 0.15;
+    // Capture zoom once at segment start. The calling loop pre-sets zoom
+    // during the rest window before each segment, so this never changes
+    // inside the RAF loop — Leaflet never flushes its tile grid mid-pan.
+    // The old approach interpolated zoom every frame, crossing tile-zoom
+    // boundaries (Math.round crossings at 0.5 intervals) repeatedly and
+    // triggering full tile-grid reloads on each crossing → white flash.
+    const segZoom = mapInstance.getZoom();
     return new Promise(resolve => {
       let elapsed = 0;
       let lastFrame = performance.now();
@@ -7416,29 +7390,16 @@ async function drawTrail() {
         poly.setLatLngs([seg.from, [lat, lng]]);
         glow.setLatLngs([seg.from, [lat, lng]]);
         if (_trailHead) _trailHead.setLatLng([lat, lng]);
-        // Camera target = the position the head will be at LOOKAHEAD_MS from now
-        const tLead = Math.min(1, (elapsed + LOOKAHEAD_MS) / budgetMs);
-        const eLead = ease(tLead);
-        const leadLat = seg.from[0] + (seg.to[0] - seg.from[0]) * eLead;
-        const leadLng = seg.from[1] + (seg.to[1] - seg.from[1]) * eLead;
-        // Slide zoom from where the camera was to this segment's ideal
-        // framing. Zoom transition completes earlier than position
-        // (zoomT runs from 0→1 over the first 60% of the segment) so the
-        // last leg of the head's animation plays at stable zoom. Otherwise
-        // a big inter-zoom delta keeps shifting scale right as the head
-        // approaches its destination.
-        const zoomT = Math.min(1, t / 0.6);
-        const ez = zoomT < 0.5 ? 2*zoomT*zoomT : 1 - Math.pow(-2*zoomT + 2, 2)/2;
-        const z = startZoom + (targetSegZoom - startZoom) * ez;
-        // Scale follow with playback speed so the camera doesn't visibly
-        // lag at 2× / 4× — at those speeds the segment plays in 6–12 frames,
-        // far too few for a 0.18 lerp to converge. Capped so it never goes
-        // fully rigid (>0.95 looks like a hard snap to the head).
-        const FOLLOW = Math.min(0.95, BASE_FOLLOW * Math.max(1, _trailSpeed));
+        // Frame-rate-independent lerp: converges at the same real-world rate
+        // regardless of screen refresh rate. Old code used a fixed 0.18 factor
+        // per frame which moved the camera twice as fast on 30fps vs 60fps.
+        const frames = Math.min(dt / (1000 / 60), 4);
+        const FOLLOW = Math.min(0.98, 1 - Math.pow(1 - BASE_FOLLOW, frames * Math.max(1, _trailSpeed)));
         const c = mapInstance.getCenter();
-        const nLat = c.lat + (leadLat - c.lat) * FOLLOW;
-        const nLng = c.lng + (leadLng - c.lng) * FOLLOW;
-        mapInstance.setView([nLat, nLng], z, { animate: false });
+        const nLat = c.lat + (lat - c.lat) * FOLLOW;
+        const nLng = c.lng + (lng - c.lng) * FOLLOW;
+        // segZoom is constant for this segment — no tile-grid flushes during pan
+        mapInstance.setView([nLat, nLng], segZoom, { animate: false });
         if (t >= 1) {
           poly.setLatLngs([seg.from, seg.to]);
           glow.setLatLngs([seg.from, seg.to]);
@@ -7518,9 +7479,9 @@ async function drawTrail() {
       if (abortCtx.aborted) return;
       if (_trailSkipRequested) { skipping = true; }
       _trailHead.setLatLng(chapter.segs[0].from);
-      // Frame the new chapter on its first segment at the SAME zoom math
-      // animateSegment uses, so there's no startZoom-vs-targetSegZoom
-      // mismatch on frame one of the new chapter.
+      // Frame the new chapter on its first segment at the same zoom
+      // animateSegment will capture, so the segment starts at stable zoom
+      // with no tile reload on its first frame.
       if (!skipping) {
         const nxt = chapter.segs[0];
         mapInstance.flyToBounds(L.latLngBounds([nxt.from, nxt.to]), {
@@ -7606,7 +7567,18 @@ async function drawTrail() {
       // doesn't accumulate hundreds of dead frames.
       const restFloor = segCount > 60 ? 50 : 110;
       const baseRest = Math.max(restFloor, Math.min(280, segBudget * 0.13));
-      await sleep(arrivedRare ? baseRest + 380 : baseRest);
+      const restMs = arrivedRare ? baseRest + 380 : baseRest;
+      // Pre-zoom for the next segment during the rest window, so the zoom
+      // snap happens while the camera is stationary (ring animation playing)
+      // rather than mid-movement. animateSegment then starts at stable zoom.
+      const nextSeg = si + 1 < chapter.segs.length ? chapter.segs[si + 1] : null;
+      if (nextSeg && !_trailSkipRequested) {
+        const nextZoom = zoomForSegment(nextSeg);
+        if (Math.abs(mapInstance.getZoom() - nextZoom) > 0.3) {
+          mapInstance.setZoom(nextZoom, { animate: false });
+        }
+      }
+      await sleep(restMs);
     }
   }
 
