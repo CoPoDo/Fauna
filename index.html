@@ -8908,6 +8908,11 @@ $('#trailCard').onclick = () => {
   cancelTrailAnim();
   S.settings.showTrail = false;
   $('#trailToggle')?.classList.toggle('on', false);
+  // Restore the cluster markers we hid for trail playback — drawTrail won't
+  // re-run to do it, so the user would otherwise return from detail to a map
+  // with no markers. Setting markersLayer back populates them at the
+  // current camera zoom.
+  if (mapInstance && !markersLayer) renderMapMarkers();
   // Defer slightly so the trail teardown finishes before the detail sheet opens
   setTimeout(() => openDetail(_trailCardEntryId), 220);
 };
