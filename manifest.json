@@ -2,21 +2,23 @@
   "name": "Fauna",
   "short_name": "Fauna",
   "description": "Wildlife sighting log",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "start_url": "./",
-  "scope": "./",
+  "orientation": "portrait",
   "background_color": "#0a0e0a",
   "theme_color": "#0a0e0a",
   "icons": [
     {
-      "src": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'><rect width='180' height='180' rx='40' fill='%230a0e0a'/><text x='90' y='128' font-family='Georgia,serif' font-size='105' font-style='italic' font-weight='500' fill='%2334d399' text-anchor='middle'>ƒ</text></svg>",
-      "sizes": "180x180",
+      "src": "/favicon.svg",
+      "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any maskable"
     }
   ],
   "share_target": {
-    "action": "./share-target",
+    "action": "/share-target",
     "method": "POST",
     "enctype": "multipart/form-data",
     "params": {

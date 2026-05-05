@@ -3,10 +3,20 @@
 // intent preserves the original file (including GPS EXIF), bypassing the
 // MediaStore redaction that strips location from <input type="file"> picks.
 
-const SHARE_CACHE = 'fauna-share-v1';
+// Bumping VERSION invalidates every old cache on activate so users upgrading
+// from an installable-but-broken (data: URL icons) PWA shell get a clean
+// slate on next launch.
+const VERSION = 'v2';
+const SHARE_CACHE = 'fauna-share-' + VERSION;
 
 self.addEventListener('install', () => self.skipWaiting());
-self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('activate', event => {
+  event.waitUntil((async () => {
+    const names = await caches.keys();
+    await Promise.all(names.filter(n => n !== SHARE_CACHE).map(n => caches.delete(n)));
+    await self.clients.claim();
+  })());
+});
 
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
