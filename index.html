@@ -4289,6 +4289,7 @@ const S = {
   activeDetailId: null,
   activeSpeciesId: null,
   filterClass: 'ALL',
+  mapSpeciesFilter: null,
   feedSearch: '',
   lifeSearch: '',
   lbPhotos: [],
@@ -7135,6 +7136,11 @@ async function drawTrail() {
 
   trailLayer = L.layerGroup().addTo(mapInstance);
   _trailLiveLayer = L.layerGroup().addTo(mapInstance);
+  // Capture this run's layer references locally — if a re-entry happens during
+  // the awaited prewarm, the globals may be reassigned to the new run's layers
+  // by the time bailOnAbort fires, and we must only tear down OUR layers.
+  const myTrailLayer = trailLayer;
+  const myLiveLayer = _trailLiveLayer;
 
   // === Pre-warm tiles along the entire trail at the camera's working zoom ===
   const allPts = allSegs.flatMap(s => [s.from, s.to]);
@@ -7148,12 +7154,12 @@ async function drawTrail() {
     targetZoom = Math.min(11, Math.max(3, fitZ));
   } catch (e) {}
   showTrailPrep();
-  // If aborted mid-prewarm we need to tear down the empty layers we already
-  // added to the map; otherwise they'd linger until the next renderMap.
   const bailOnAbort = () => {
     hideTrailPrep();
-    if (mapInstance && trailLayer) { try { mapInstance.removeLayer(trailLayer); } catch (e) {} trailLayer = null; }
-    if (mapInstance && _trailLiveLayer) { try { mapInstance.removeLayer(_trailLiveLayer); } catch (e) {} _trailLiveLayer = null; }
+    if (mapInstance && myTrailLayer) try { mapInstance.removeLayer(myTrailLayer); } catch (e) {}
+    if (mapInstance && myLiveLayer) try { mapInstance.removeLayer(myLiveLayer); } catch (e) {}
+    if (trailLayer === myTrailLayer) trailLayer = null;
+    if (_trailLiveLayer === myLiveLayer) _trailLiveLayer = null;
     if (_trailAnimAbort === abortCtx) _trailAnimAbort = null;
   };
   await prewarmTiles(mapInstance, bounds, targetZoom, 4500);
@@ -7398,14 +7404,21 @@ async function drawTrail() {
   mapInstance.flyToBounds(bounds, { padding: [60, 60], duration: 1.2, maxZoom: 12 });
   await sleep(1200);
   if (abortCtx.aborted) return;
-  if (_trailHead) {
-    const el = _trailHead.getElement();
+  // Capture our head reference locally — fade-out + sleep(800) is a window
+  // during which a re-entry could swap _trailHead to a fresh marker that we
+  // mustn't accidentally tear down.
+  const myHead = _trailHead;
+  if (myHead) {
+    const el = myHead.getElement();
     if (el) { el.style.transition = 'opacity 0.8s'; el.style.opacity = '0'; }
     await sleep(800);
   }
-  if (_trailHead && mapInstance) { try { mapInstance.removeLayer(_trailHead); } catch(e) {} _trailHead = null; }
-  if (_trailLiveLayer && mapInstance) { try { mapInstance.removeLayer(_trailLiveLayer); } catch(e) {} _trailLiveLayer = null; }
-  _trailAnimAbort = null;
+  if (abortCtx.aborted) return;
+  if (myHead && mapInstance) { try { mapInstance.removeLayer(myHead); } catch(e) {} }
+  if (_trailHead === myHead) _trailHead = null;
+  if (myLiveLayer && mapInstance) { try { mapInstance.removeLayer(myLiveLayer); } catch(e) {} }
+  if (_trailLiveLayer === myLiveLayer) _trailLiveLayer = null;
+  if (_trailAnimAbort === abortCtx) _trailAnimAbort = null;
   _mapSuspendRecluster = false;
   // Swap controls to "done" state — replay button replaces pause/speed/skip
   if ($('#trailHudPause')) $('#trailHudPause').style.display = 'none';
