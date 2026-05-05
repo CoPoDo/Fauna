@@ -2310,7 +2310,8 @@ textarea.fld-in { resize: vertical; min-height: 60px; }
   max-width: 480px; margin: 0 auto;
   box-shadow: 0 12px 30px rgba(0,0,0,0.45);
 }
-.trail-card.on { opacity: 1; transform: translateY(0) scale(1); }
+.trail-card.on { opacity: 1; transform: translateY(0) scale(1); pointer-events: auto; cursor: pointer; }
+.trail-card.on:active { transform: translateY(0) scale(0.98); }
 .trail-card-img {
   width: 52px; height: 52px;
   border-radius: 10px;
@@ -6749,8 +6750,10 @@ function hideTrailHud() { const el = $('#trailHud'); if (el) el.classList.remove
 // trail head reaches a sighting. Auto-hides after a short window.
 let _trailCardUrl = null;
 let _trailCardTimer = null;
+let _trailCardEntryId = null;
 async function showTrailCard(entry, isNew) {
   if (!entry) return;
+  _trailCardEntryId = entry.id;
   const card = $('#trailCard');
   const img = $('#trailCardImg');
   const name = $('#trailCardName');
@@ -8394,6 +8397,15 @@ $('#trailHudSpeed').onclick = () => { cycleTrailSpeed(); vibrate(4); };
 $('#trailHudSkip').onclick = () => { _trailSkipRequested = true; vibrate(6); };
 $('#trailHudMode').onclick = () => { cycleTrailColorMode(); vibrate(4); };
 $('#mapFilterChipClear').onclick = () => { setMapSpeciesFilter(null); vibrate(4); };
+$('#trailCard').onclick = () => {
+  if (!_trailCardEntryId) return;
+  vibrate(8);
+  cancelTrailAnim();
+  S.settings.showTrail = false;
+  $('#trailToggle')?.classList.toggle('on', false);
+  // Defer slightly so the trail teardown finishes before the detail sheet opens
+  setTimeout(() => openDetail(_trailCardEntryId), 220);
+};
 $('#trailHudReplay').onclick = async () => {
   vibrate(8);
   S.settings.showTrail = true;
