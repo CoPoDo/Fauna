@@ -7923,6 +7923,13 @@ async function openSpeciesSheet(spId) {
   if (!sp) return;
   S.activeSpeciesId = spId;
   const sightings = S.entries.filter(e => e.speciesId === spId).sort((a, b) => b.at - a.at);
+  // Mark the earliest sighting in this species' history as "First" so the
+  // badge in renderFeedItem renders correctly here too — without this, the
+  // flag is only accurate after Feed has been rendered at least once.
+  if (sightings.length) {
+    const earliestAt = Math.min(...sightings.map(e => e.at || Infinity));
+    sightings.forEach(e => { e._isFirst = e.at === earliestAt; });
+  }
   // Gather photos across sightings
   const photos = [];
   for (const e of sightings) {
