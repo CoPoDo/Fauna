@@ -8840,6 +8840,10 @@ function renderScan() {
       </div>
     `;
     $('#dexRetryBtn').onclick = () => {
+      // Drop the failed scan's blob URL before resetting state so it doesn't
+      // leak across retries.
+      if (S.scanPhoto?.url) URL.revokeObjectURL(S.scanPhoto.url);
+      S.scanPhoto = null;
       S.scanState = 'ready';
       S.scanError = null;
       renderScan();
