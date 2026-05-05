@@ -7240,10 +7240,13 @@ async function drawTrail() {
     ringAt(chapter.segs[0].from);
     if (ci === 0 && chapter.segs[0].fromEntry) updateTrailHud(hudState, chapter.segs[0].fromEntry);
 
+    // For very long trails, relax the per-segment floor so the actual playback
+    // time matches the total budget instead of overshooting it linearly.
+    const minSegMs = segCount > 40 ? Math.max(180, 420 - (segCount - 40) * 4) : 420;
     for (let si = 0; si < chapter.segs.length; si++) {
       if (abortCtx.aborted) return;
       const seg = chapter.segs[si];
-      const segBudget = Math.max(420, Math.min(2200, totalDurMs * (seg.dist / totalDist)));
+      const segBudget = Math.max(minSegMs, Math.min(2200, totalDurMs * (seg.dist / totalDist)));
       await animateSegment(seg, segBudget);
       if (abortCtx.aborted) return;
       ringAt(seg.to);
@@ -7289,7 +7292,10 @@ async function drawTrail() {
         }
         break outer;
       }
-      const baseRest = Math.max(110, Math.min(280, segBudget * 0.13));
+      // Rest between segments scales down for big libraries so the playback
+      // doesn't accumulate hundreds of dead frames.
+      const restFloor = segCount > 60 ? 50 : 110;
+      const baseRest = Math.max(restFloor, Math.min(280, segBudget * 0.13));
       await sleep(arrivedRare ? baseRest + 380 : baseRest);
     }
   }
