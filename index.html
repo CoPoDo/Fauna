@@ -6604,6 +6604,20 @@ function renderFeedItem(e) {
 let mapInstance = null, markersLayer = null, trailLayer = null, hereMarker = null;
 
 // ===== Trips (location + time based auto-grouping) =====
+// Single source of truth for "is this location safe to plot?". Rejects:
+// - null/undefined location object
+// - non-finite lat/lng (NaN from broken EXIF, undefined from old imports)
+// - "Null Island" (0,0) — almost always a corrupted GPS reading, never a
+//   real wildlife sighting; including it stretches map bounds across the
+//   Atlantic and makes trails draw lines through ocean to a phantom point
+// - out-of-range coords (|lat|>90, |lng|>180) from corrupted data
+function hasValidLocation(loc) {
+  if (!loc) return false;
+  if (!Number.isFinite(loc.lat) || !Number.isFinite(loc.lng)) return false;
+  if (Math.abs(loc.lat) > 90 || Math.abs(loc.lng) > 180) return false;
+  if (Math.abs(loc.lat) < 0.0001 && Math.abs(loc.lng) < 0.0001) return false;
+  return true;
+}
 function distanceKm(a, b) {
   if (!a || !b || !Number.isFinite(a.lat) || !Number.isFinite(b.lat)) return Infinity;
   const R = 6371;
@@ -6619,7 +6633,7 @@ const TRIP_GAP_KM = 500;                       // or 500km jump
 
 function computeTrips() {
   const geo = S.entries
-    .filter(e => e.at && e.location && Number.isFinite(e.location.lat) && Number.isFinite(e.location.lng))
+    .filter(e => e.at && hasValidLocation(e.location))
     .sort((a, b) => a.at - b.at);
   if (!geo.length) return [];
   const trips = [];
@@ -6761,7 +6775,7 @@ function buildMapGroups() {
   const groups = new Map();
   S.entries.forEach(e => {
     if (!entryMatchesMapFilters(e)) return;
-    if (!e.location || !Number.isFinite(e.location.lat) || !Number.isFinite(e.location.lng)) return;
+    if (!hasValidLocation(e.location)) return;
     const key = `${e.location.lat.toFixed(3)},${e.location.lng.toFixed(3)}`;
     if (!groups.has(key)) groups.set(key, { lat: e.location.lat, lng: e.location.lng, city: e.location.city || '', country: e.location.country || '', cc: e.location.cc || '', entries: [] });
     groups.get(key).entries.push(e);
@@ -7580,7 +7594,7 @@ function renderHereMarker() {
   if (!mapInstance) return;
   if (hereMarker) { try { mapInstance.removeLayer(hereMarker); } catch (e) {} hereMarker = null; }
   const here = S.currentGps;
-  if (!here || !Number.isFinite(here.lat) || !Number.isFinite(here.lng)) return;
+  if (!hasValidLocation(here)) return;
   const icon = L.divIcon({
     html: `<div class="here-mkr"><div class="here-mkr-pulse"></div><div class="here-mkr-dot"></div></div>`,
     className: 'here-mkr-wrap', iconSize: [22, 22], iconAnchor: [11, 11]
@@ -7623,11 +7637,12 @@ function renderMap() {
 let _pendingMapFocus = null;
   setTimeout(() => {
     mapInstance.invalidateSize();
-    if (_pendingMapFocus && Number.isFinite(_pendingMapFocus.lat) && Number.isFinite(_pendingMapFocus.lng)) {
+    if (hasValidLocation(_pendingMapFocus)) {
       const focus = _pendingMapFocus;
       _pendingMapFocus = null;
       mapInstance.flyTo([focus.lat, focus.lng], focus.zoom || 18, { duration: 0.8 });
     } else {
+      _pendingMapFocus = null;
       mapInstance.fitBounds(rawBounds, { padding: [60, 60], maxZoom: 13 });
     }
     setTimeout(() => { _mapSuspendRecluster = false; renderMapMarkers(); }, 350);
@@ -7820,7 +7835,7 @@ async function openDetail(id) {
 
   // Location section — either mini map (has lat/lng) or prompt
   let locSection = '';
-  if (e.location && Number.isFinite(e.location.lat) && Number.isFinite(e.location.lng)) {
+  if (hasValidLocation(e.location)) {
     const placeText = loc ? `${flag(e.location.cc)} ${esc(loc)}` : `${e.location.lat.toFixed(4)}, ${e.location.lng.toFixed(4)}`;
     locSection = `<div class="det-section">
       <div class="det-section-lbl">Location</div>
@@ -7860,7 +7875,7 @@ async function openDetail(id) {
     ${sp?.flavor ? buildFlavorHtml(sp) : (sp?.fieldNote ? `<div class="det-field-note">${esc(sp.fieldNote)}</div>` : '')}
     <div class="det-section">
       <div class="det-meta-row"><span class="k">When</span><span class="v">${fmtDate(e.at)}</span></div>
-      ${loc && !Number.isFinite(e.location.lat) ? `<div class="det-meta-row"><span class="k">Where</span><span class="v">${flag(e.location.cc)} ${esc(loc)}</span></div>` : ''}
+      ${loc && !hasValidLocation(e.location) ? `<div class="det-meta-row"><span class="k">Where</span><span class="v">${flag(e.location.cc)} ${esc(loc)}</span></div>` : ''}
       ${e.identifiedBy === 'ai' ? `<div class="det-meta-row"><span class="k">Identified by</span><span class="v">AI${e.aiConfidence ? ' · ' + esc(e.aiConfidence) + ' confidence' : ''}</span></div>` : ''}
     </div>
     ${locSection}
@@ -7878,7 +7893,7 @@ async function openDetail(id) {
   wireChipClicks($('#detBody'));
 
   // Init mini-map if location has coords
-  if (e.location && Number.isFinite(e.location.lat) && Number.isFinite(e.location.lng)) {
+  if (hasValidLocation(e.location)) {
     setTimeout(() => {
       initDetMiniMap(e.location.lat, e.location.lng);
       const mm = document.getElementById('detMiniMap');
