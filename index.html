@@ -6851,9 +6851,11 @@ function hideTrailHud() { const el = $('#trailHud'); if (el) el.classList.remove
 let _trailCardUrl = null;
 let _trailCardTimer = null;
 let _trailCardEntryId = null;
+let _trailCardSeq = 0;
 async function showTrailCard(entry, isNew) {
   if (!entry) return;
   _trailCardEntryId = entry.id;
+  const myCardSeq = ++_trailCardSeq;
   const card = $('#trailCard');
   const img = $('#trailCardImg');
   const name = $('#trailCardName');
@@ -6878,17 +6880,24 @@ async function showTrailCard(entry, isNew) {
       : isRare ? 'RARE'
       : '';
   }
-  // Photo (revoke previous URL)
-  if (_trailCardUrl) { URL.revokeObjectURL(_trailCardUrl); _trailCardUrl = null; }
-  img.style.backgroundImage = '';
+  // Photo: only swap when the new one resolves so we don't flash a blank
+  // frame between vertices, and don't revoke the prior URL until the new
+  // one is in place. Stale callbacks (superseded by a later vertex) bail.
   const pid = entry.photoIds?.[0];
   if (pid) {
     DB.getPh(pid).then(photo => {
-      if (!photo) return;
+      if (!photo || myCardSeq !== _trailCardSeq) return;
       const url = URL.createObjectURL(photo.blob);
+      const oldUrl = _trailCardUrl;
       _trailCardUrl = url;
       img.style.backgroundImage = `url(${url})`;
+      if (oldUrl) URL.revokeObjectURL(oldUrl);
     }).catch(() => {});
+  } else {
+    // No photo for this entry — clear immediately so we don't show the
+    // previous vertex's photo under a different species name.
+    if (_trailCardUrl) { URL.revokeObjectURL(_trailCardUrl); _trailCardUrl = null; }
+    img.style.backgroundImage = '';
   }
   card.classList.add('on');
   _trailCardTimer = setTimeout(() => hideTrailCard(), 1700);
@@ -6898,6 +6907,9 @@ function hideTrailCard() {
   if (!card) return;
   card.classList.remove('on');
   clearTimeout(_trailCardTimer);
+  // Bump the sequence so any in-flight DB.getPh promise resolves into a
+  // no-op instead of repainting a card the user just dismissed.
+  _trailCardSeq++;
   _trailCardTimer = setTimeout(() => {
     if (_trailCardUrl) { URL.revokeObjectURL(_trailCardUrl); _trailCardUrl = null; }
     const img = $('#trailCardImg');
@@ -6956,9 +6968,12 @@ async function shareJourneyText() {
     try {
       await navigator.share({ text: _trailShareText, title: 'Fauna journey' });
       return;
-    } catch (e) { /* user dismissed or unsupported, fall through */ }
+    } catch (e) {
+      // User-dismissed cancel: don't silently copy to clipboard against their
+      // intent. Only fall through if the browser threw a real error.
+      if (e && e.name === 'AbortError') return;
+    }
   }
-  // Clipboard fallback
   try {
     await navigator.clipboard.writeText(_trailShareText);
     toast('Copied journey summary');
@@ -7027,8 +7042,11 @@ function updateTrailHud(state, currentEntry) {
   const newFlag = cc ? flag(cc) : '';
   if (flagEl.textContent !== newFlag) flagEl.textContent = newFlag;
   if (locEl.textContent !== locName) {
+    // Single-shot transition: cancel any in-flight swap so a fast sequence of
+    // vertices doesn't interleave older labels into the displayed text.
+    clearTimeout(locEl._swapT);
     locEl.classList.add('changing');
-    setTimeout(() => {
+    locEl._swapT = setTimeout(() => {
       locEl.textContent = locName;
       locEl.classList.remove('changing');
     }, 180);
@@ -7099,7 +7117,12 @@ async function drawTrail() {
     }
     if (segs.length) chapters.push({ segs, startAt: segs[0].at, trip });
   });
-  if (!chapters.length) return;
+  if (!chapters.length) {
+    // Filter could've stripped every multi-point trip; leave nothing on the
+    // map and clear the abort context so the next toggle starts fresh.
+    if (_trailAnimAbort === abortCtx) _trailAnimAbort = null;
+    return;
+  }
   chapters.sort((a, b) => a.startAt - b.startAt);
   const allSegs = chapters.flatMap(c => c.segs);
   const totalDist = allSegs.reduce((s, x) => s + x.dist, 0) || 1;
@@ -7125,11 +7148,19 @@ async function drawTrail() {
     targetZoom = Math.min(11, Math.max(3, fitZ));
   } catch (e) {}
   showTrailPrep();
+  // If aborted mid-prewarm we need to tear down the empty layers we already
+  // added to the map; otherwise they'd linger until the next renderMap.
+  const bailOnAbort = () => {
+    hideTrailPrep();
+    if (mapInstance && trailLayer) { try { mapInstance.removeLayer(trailLayer); } catch (e) {} trailLayer = null; }
+    if (mapInstance && _trailLiveLayer) { try { mapInstance.removeLayer(_trailLiveLayer); } catch (e) {} _trailLiveLayer = null; }
+    if (_trailAnimAbort === abortCtx) _trailAnimAbort = null;
+  };
   await prewarmTiles(mapInstance, bounds, targetZoom, 4500);
-  if (abortCtx.aborted) { hideTrailPrep(); return; }
+  if (abortCtx.aborted) { bailOnAbort(); return; }
   // Also prewarm one zoom level deeper for the camera-follow phase
   if (targetZoom < 11) await prewarmTiles(mapInstance, bounds, targetZoom + 1, 3500);
-  if (abortCtx.aborted) { hideTrailPrep(); return; }
+  if (abortCtx.aborted) { bailOnAbort(); return; }
   hideTrailPrep();
 
   // === Setup head marker ===
@@ -7242,7 +7273,9 @@ async function drawTrail() {
 
   _mapSuspendRecluster = true;
   mapInstance.flyTo(allSegs[0].from, targetZoom, { duration: 0.8 });
-  await sleep(750);
+  // Wait for the flyTo to land before starting the animation; otherwise the
+  // first segment plays while the camera is still drifting toward the start.
+  await sleep(900);
   if (abortCtx.aborted) return;
 
   let skipping = false;
@@ -7261,14 +7294,16 @@ async function drawTrail() {
         color: '#d4a574', weight: 1.4, opacity: 0.45,
         dashArray: '4 7', interactive: false, lineCap: 'round'
       }).addTo(trailLayer);
-      // Banner: country + time-since-last-trip
+      // Banner: country + time-since-last-trip. Skip the show entirely if the
+      // user already requested skip — otherwise the banner flashes for a frame
+      // and immediately gets hidden.
       const fromE = chapter.segs[0].fromEntry;
       const prevLastEntry = prevChapter.segs[prevChapter.segs.length - 1].toEntry;
       const gapDays = (prevLastEntry?.at && fromE?.at)
         ? (fromE.at - prevLastEntry.at) / 86400000 : 0;
       const countryName = fromE?.location?.country || fromE?.location?.city || 'New place';
       const cc = fromE?.location?.cc || '';
-      showTripBanner(countryName, cc, gapDays);
+      if (!_trailSkipRequested) showTripBanner(countryName, cc, gapDays);
       const el = _trailHead.getElement();
       if (el) { el.style.transition = 'opacity 0.3s'; el.style.opacity = '0'; }
       await sleep(420);
@@ -7562,20 +7597,19 @@ function renderMapMarkers() {
     });
     const mk = L.marker([g.lat, g.lng], { icon }).addTo(markersLayer);
     if (thumbId) {
-      // Lazy-load the thumbnail; the marker is already painted with the
-      // emoji-style frame so there's no layout jump when the photo arrives.
-      mk.on('add', () => {
-        const el = mk.getElement();
-        if (!el) return;
-        const inner = el.querySelector('.fmkr-img-inner');
-        if (!inner) return;
+      // Load the thumbnail directly — Leaflet fires 'add' synchronously inside
+      // .addTo() so a listener registered after addTo would never run. The
+      // marker's element is in the DOM the moment addTo returns.
+      const el = mk.getElement();
+      const inner = el && el.querySelector('.fmkr-img-inner');
+      if (inner) {
         DB.getPh(thumbId).then(photo => {
           if (!photo || !inner.isConnected) return;
           const url = URL.createObjectURL(photo.blob);
           _markerThumbUrls.push(url);
           inner.style.backgroundImage = `url(${url})`;
         }).catch(() => {});
-      });
+      }
     }
     mk.on('click', () => {
       // If the marker is a merged cluster (multiple distinct raw locations
