@@ -3521,6 +3521,7 @@ body:has(#vS.active) .fab { display: none; }
     <div class="trail-hud-stats">
       <div class="thst"><span class="thst-v" id="trailHudKm">0</span><span class="thst-u">km</span></div>
       <div class="thst"><span class="thst-v" id="trailHudSpecies">0</span><span class="thst-u">species</span></div>
+      <div class="thst"><span class="thst-v" id="trailHudCountries">0</span><span class="thst-u">places</span></div>
       <div class="thst"><span class="thst-v" id="trailHudSightings">0</span><span class="thst-u">spotted</span></div>
     </div>
     <div class="trail-hud-progress"><div class="trail-hud-progress-fill" id="trailHudProg"></div></div>
@@ -3534,6 +3535,9 @@ body:has(#vS.active) .fab { display: none; }
         </span>
       </button>
       <button class="thc thc-speed" id="trailHudSpeed" type="button" aria-label="Playback speed">1×</button>
+      <button class="thc thc-mode" id="trailHudMode" type="button" aria-label="Trail colour mode" title="Cycle colour mode">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18M12 3a9 9 0 0 0 0 18"/></svg>
+      </button>
       <div class="thc-spacer"></div>
       <button class="thc thc-skip" id="trailHudSkip" type="button" aria-label="Skip to end">
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 4l11 8-11 8zM18 4h2v16h-2z"/></svg>
@@ -4104,7 +4108,8 @@ const S = {
     haptics: true,
     locOn: true,
     lifeSort: 'recent',
-    showTrail: false
+    showTrail: false,
+    trailColorMode: 'recency' // 'recency' | 'class' | 'rarity'
   },
   draft: null,           // in-progress add/edit
   draftPhotos: [],       // [{ id, blob, url, exif:{at,lat,lng} }]
@@ -6727,6 +6732,16 @@ function updateTrailHud(state, currentEntry) {
     void spEl.offsetWidth;
     spEl.classList.add('bumped');
   }
+  const ctEl = $('#trailHudCountries');
+  if (ctEl && state.countries) {
+    const ctShown = String(state.countries.size);
+    if (ctEl.textContent !== ctShown) {
+      ctEl.textContent = ctShown;
+      ctEl.classList.remove('bumped');
+      void ctEl.offsetWidth;
+      ctEl.classList.add('bumped');
+    }
+  }
   const sgShown = String(state.sightings);
   if (sgEl.textContent !== sgShown) sgEl.textContent = sgShown;
   const pct = (state.doneSegs / Math.max(1, state.totalSegs)) * 100;
@@ -6764,7 +6779,7 @@ async function drawTrail() {
         to: [b.location.lat, b.location.lng],
         at: b.at,
         dist,
-        color: recencyColor(t),
+        color: trailSegColor(b, t),
         toEntry: b,
         fromEntry: a
       });
@@ -6894,12 +6909,14 @@ async function drawTrail() {
   const hudState = {
     km: 0,
     species: new Set(),
+    countries: new Set(),
     sightings: 1,
     doneSegs: 0,
     totalSegs: segCount
   };
   // Seed with first entry so HUD opens with full info, not blanks
   if (allSegs[0].fromEntry?.speciesId) hudState.species.add(allSegs[0].fromEntry.speciesId);
+  if (allSegs[0].fromEntry?.location?.country) hudState.countries.add(allSegs[0].fromEntry.location.country);
   showTrailHud();
   // Reset playback controls visibility for a fresh run
   const _btn = id => $(id);
@@ -6957,6 +6974,7 @@ async function drawTrail() {
         const wasNew = fromE.speciesId && !hudState.species.has(fromE.speciesId);
         hudState.sightings += 1;
         if (fromE.speciesId) hudState.species.add(fromE.speciesId);
+        if (fromE.location?.country) hudState.countries.add(fromE.location.country);
         updateTrailHud(hudState, fromE);
         showTrailCard(fromE, wasNew);
       }
@@ -6978,6 +6996,7 @@ async function drawTrail() {
       hudState.km += seg.dist;
       hudState.sightings += 1;
       if (seg.toEntry?.speciesId) hudState.species.add(seg.toEntry.speciesId);
+      if (seg.toEntry?.location?.country) hudState.countries.add(seg.toEntry.location.country);
       hudState.doneSegs += 1;
       updateTrailHud(hudState, seg.toEntry);
       showTrailCard(seg.toEntry, wasNewSpecies);
@@ -7001,6 +7020,7 @@ async function drawTrail() {
             hudState.km += s2.dist;
             hudState.sightings += 1;
             if (s2.toEntry?.speciesId) hudState.species.add(s2.toEntry.speciesId);
+            if (s2.toEntry?.location?.country) hudState.countries.add(s2.toEntry.location.country);
             hudState.doneSegs += 1;
           }
         }
@@ -7047,6 +7067,40 @@ function recencyColor(t) {
   const g = Math.round(66 + (211 - 66) * k);
   const b = Math.round(64 + (153 - 64) * k);
   return `rgb(${r},${g},${b})`;
+}
+const CLASS_COLOR = {
+  arachnid: '#a78bfa', insect: '#fbbf24', lepidoptera: '#fb7185',
+  reptile: '#34d399', mammal: '#d4a574', bird: '#60a5fa',
+  amphibian: '#a3e635', fish: '#06b6d4', crustacean: '#f87171',
+  mollusc: '#c4b5fd', plant: '#22c55e', tree: '#15803d',
+  flower: '#ec4899', fungus: '#f59e0b', human: '#94a3b8',
+  algae: '#0ea5e9', other: '#94a3b8'
+};
+function classColor(cls) { return CLASS_COLOR[cls] || '#94a3b8'; }
+// Pick the colour for a segment based on the user's chosen mode.
+function trailSegColor(entry, recencyT) {
+  const mode = S.settings.trailColorMode || 'recency';
+  if (mode === 'class') {
+    const c = getClassOfEntry(entry);
+    return classColor(c);
+  }
+  if (mode === 'rarity') {
+    const sp = entry?.speciesId ? S.species.find(s => s.id === entry.speciesId) : null;
+    return sp?.rarity ? rarityColor(sp.rarity) : '#94a3b8';
+  }
+  return recencyColor(recencyT);
+}
+const TRAIL_COLOR_MODES = ['recency', 'class', 'rarity'];
+const TRAIL_COLOR_MODE_LABELS = { recency: 'recency', class: 'class', rarity: 'rarity' };
+function cycleTrailColorMode() {
+  const cur = S.settings.trailColorMode || 'recency';
+  const idx = TRAIL_COLOR_MODES.indexOf(cur);
+  const next = TRAIL_COLOR_MODES[(idx + 1) % TRAIL_COLOR_MODES.length];
+  S.settings.trailColorMode = next;
+  saveSettings();
+  toast(`Trail colour: ${TRAIL_COLOR_MODE_LABELS[next]}`);
+  // Re-run the trail with the new colours if a journey is active or just ended
+  if (S.settings.showTrail) drawTrail();
 }
 
 let _mapSuspendRecluster = false;
@@ -7447,7 +7501,7 @@ $('#wipeBtn').onclick = async () => {
   if (!confirm('Really? No undo.')) return;
   await DB.clearAll();
   S.entries = []; S.species = [];
-  S.settings = { apiKey: '', model: 'claude-haiku-4-5', autoId: true, haptics: true, locOn: true, lifeSort: 'recent', showTrail: false };
+  S.settings = { apiKey: '', model: 'claude-haiku-4-5', autoId: true, haptics: true, locOn: true, lifeSort: 'recent', showTrail: false, trailColorMode: 'recency' };
   await saveSettings();
   $('#setSh').classList.remove('open');
   renderAll();
@@ -8080,6 +8134,7 @@ $('#trailToggle').onclick = async () => {
 $('#trailHudPause').onclick = () => { setTrailPaused(!_trailPaused); vibrate(4); };
 $('#trailHudSpeed').onclick = () => { cycleTrailSpeed(); vibrate(4); };
 $('#trailHudSkip').onclick = () => { _trailSkipRequested = true; vibrate(6); };
+$('#trailHudMode').onclick = () => { cycleTrailColorMode(); vibrate(4); };
 $('#trailHudReplay').onclick = async () => {
   vibrate(8);
   S.settings.showTrail = true;
