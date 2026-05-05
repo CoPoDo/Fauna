@@ -1570,6 +1570,40 @@ body::before {
   line-height: 1.2;
 }
 
+/* Photo-thumbnail variant — kicks in at higher zooms so individual sightings
+   reveal their content without taking over the map at city scale */
+.fmkr-photo {
+  width: 44px; height: 44px;
+  border-radius: 12px;
+  border: 2.5px solid currentColor;
+  background: var(--bg-card) center/cover no-repeat;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.55), 0 0 14px currentColor;
+  position: relative;
+  overflow: visible;
+  transition: transform 0.15s;
+  animation: fmkrPhotoIn 0.3s cubic-bezier(0.2,0.9,0.3,1.05);
+}
+.fmkr:active .fmkr-photo { transform: scale(0.94); }
+@keyframes fmkrPhotoIn {
+  0% { transform: scale(0.7); opacity: 0; }
+  60% { transform: scale(1.08); opacity: 1; }
+  100% { transform: scale(1); }
+}
+.fmkr-photo .fmkr-img-inner {
+  position: absolute; inset: 0;
+  background-size: cover; background-position: center;
+  border-radius: 9px;
+}
+.fmkr-photo .fmkr-cls-badge {
+  position: absolute; bottom: -3px; right: -3px;
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  background: var(--bg);
+  border: 1.5px solid currentColor;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 10px; line-height: 1;
+}
+
 /* Map sheet */
 .map-sheet {
   position: fixed;
@@ -7138,12 +7172,25 @@ function renderMap() {
   }, 100);
 }
 
+// Track marker thumbnail URLs so they can be revoked when markers re-render
+let _markerThumbUrls = [];
 function renderMapMarkers() {
   if (!mapInstance) return;
   if (markersLayer) { mapInstance.removeLayer(markersLayer); markersLayer = null; }
+  // Revoke previous-render URLs after a short delay so any frame still
+  // referencing them as backgroundImage finishes drawing first.
+  const stale = _markerThumbUrls;
+  _markerThumbUrls = [];
+  if (stale.length) setTimeout(() => {
+    for (const u of stale) { try { URL.revokeObjectURL(u); } catch (e) {} }
+  }, 1500);
   const groups = buildMapGroupsClustered();
   if (!groups.length) return;
   markersLayer = L.layerGroup().addTo(mapInstance);
+  const zoom = mapInstance.getZoom();
+  // Show photo thumbnails when zoomed in enough that they aren't crowding
+  // each other. Below this, the emoji marker reads better at a glance.
+  const useThumbs = zoom >= 13;
   groups.forEach(g => {
     const count = g.entries.length;
     const clsCount = {};
@@ -7153,14 +7200,43 @@ function renderMapMarkers() {
     });
     const topClass = Object.keys(clsCount).sort((a, b) => clsCount[b] - clsCount[a])[0];
     const clsDef = CLASSES_MAP[topClass] || CLASSES_MAP.other;
-    // Rarity/danger highest
     const rarest = g.entries.map(e => S.species.find(s => s.id === e.speciesId)?.rarity).filter(Boolean).sort((a, b) => rarityRank(b) - rarityRank(a))[0];
     const color = rarest ? rarityColor(rarest) : '#d4a574';
+    // Pick the most recent photo at this location for the thumbnail
+    const sortedByRecent = g.entries.slice().sort((a, b) => (b.at || 0) - (a.at || 0));
+    const thumbId = useThumbs ? sortedByRecent.find(e => e.photoIds?.[0])?.photoIds?.[0] : null;
+    let html;
+    if (thumbId) {
+      html = `<div class="fmkr" style="color:${color}">
+        <div class="fmkr-photo" data-thumb-id="${esc(thumbId)}">
+          <div class="fmkr-img-inner"></div>
+          <div class="fmkr-cls-badge">${clsDef.emoji}</div>
+        </div>
+        ${count > 1 ? `<div class="fmkr-count">${count}</div>` : ''}
+      </div>`;
+    } else {
+      html = `<div class="fmkr" style="color:${color}"><div class="fmkr-dot">${clsDef.emoji}</div>${count > 1 ? `<div class="fmkr-count">${count}</div>` : ''}</div>`;
+    }
     const icon = L.divIcon({
-      html: `<div class="fmkr" style="color:${color}"><div class="fmkr-dot">${clsDef.emoji}</div>${count > 1 ? `<div class="fmkr-count">${count}</div>` : ''}</div>`,
-      className: 'fmkr-wrap', iconSize: [44, 44], iconAnchor: [22, 22]
+      html, className: 'fmkr-wrap', iconSize: [44, 44], iconAnchor: [22, 22]
     });
     const mk = L.marker([g.lat, g.lng], { icon }).addTo(markersLayer);
+    if (thumbId) {
+      // Lazy-load the thumbnail; the marker is already painted with the
+      // emoji-style frame so there's no layout jump when the photo arrives.
+      mk.on('add', () => {
+        const el = mk.getElement();
+        if (!el) return;
+        const inner = el.querySelector('.fmkr-img-inner');
+        if (!inner) return;
+        DB.getPh(thumbId).then(photo => {
+          if (!photo || !inner.isConnected) return;
+          const url = URL.createObjectURL(photo.blob);
+          _markerThumbUrls.push(url);
+          inner.style.backgroundImage = `url(${url})`;
+        }).catch(() => {});
+      });
+    }
     mk.on('click', () => {
       // If the marker is a merged cluster (multiple distinct raw locations
       // collapsed by pixel-space clustering), zoom in instead of dumping all
