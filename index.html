@@ -6664,8 +6664,12 @@ function applyTileStyle(name) {
   const opts = { maxZoom: style.maxZoom };
   if (style.subdomains) opts.subdomains = style.subdomains;
   _activeTileLayer = L.tileLayer(style.url, opts).addTo(mapInstance);
-  S.settings.mapStyle = name;
-  saveSettings();
+  // Persist only when the user-visible setting actually changes; otherwise
+  // every map open would write back the same value to IndexedDB.
+  if (S.settings.mapStyle !== name) {
+    S.settings.mapStyle = name;
+    saveSettings();
+  }
 }
 function cycleTileStyle() {
   const order = Object.keys(TILE_STYLES);
@@ -7080,12 +7084,24 @@ function updateTrailHud(state, currentEntry) {
   progEl.style.width = pct + '%';
 }
 
+// Resets the toggle UI when drawTrail can't build a journey, so the user
+// isn't left staring at an "on" toggle with nothing happening.
+function _trailGiveUp(msg) {
+  S.settings.showTrail = false;
+  const tog = $('#trailToggle');
+  if (tog) tog.classList.toggle('on', false);
+  if (msg) toast(msg);
+}
+
 async function drawTrail() {
   cancelTrailAnim();
   if (!mapInstance) return;
   if (!S.settings.showTrail) return;
   const trips = computeTrips();
-  if (!trips.length) return;
+  if (!trips.length) {
+    _trailGiveUp('No journey yet — add sightings with locations to trace one');
+    return;
+  }
   // Abort context registered up front so a re-entry (rapid toggle) can
   // interrupt us during the awaited prewarm phase, not just animation.
   const abortCtx = { aborted: false };
@@ -7119,9 +7135,13 @@ async function drawTrail() {
     if (segs.length) chapters.push({ segs, startAt: segs[0].at, trip });
   });
   if (!chapters.length) {
-    // Filter could've stripped every multi-point trip; leave nothing on the
-    // map and clear the abort context so the next toggle starts fresh.
+    // Filter could've stripped every multi-point trip, or every trip is just
+    // a single sighting. Reset the toggle so the user gets feedback instead
+    // of a silent dead end.
     if (_trailAnimAbort === abortCtx) _trailAnimAbort = null;
+    _trailGiveUp(S.mapSpeciesFilter
+      ? 'No journey for this species — needs 2+ sightings'
+      : 'No multi-stop trips logged yet');
     return;
   }
   chapters.sort((a, b) => a.startAt - b.startAt);
