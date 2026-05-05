@@ -7339,7 +7339,11 @@ async function drawTrail() {
       if (abortCtx.aborted) return;
       if (_trailSkipRequested) { skipping = true; }
       _trailHead.setLatLng(chapter.segs[0].from);
-      if (!skipping) mapInstance.flyTo(chapter.segs[0].from, targetZoom, { duration: 0.9 });
+      // Keep flyTo's animation budget shorter than the awaited 620+220ms gap
+      // so the camera has fully landed by the time the first segment's
+      // per-frame setView calls take over — otherwise they fight the residual
+      // flyTo and the head visibly jumps as control transfers.
+      if (!skipping) mapInstance.flyTo(chapter.segs[0].from, targetZoom, { duration: 0.6 });
       await sleep(620);
       // Banner has been on stage long enough — ease it out as the head fades back in
       hideTripBanner();
