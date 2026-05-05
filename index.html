@@ -5299,8 +5299,11 @@ async function openAddSheet(existing) {
 
 function closeAddSheet() {
   $('#addSh').classList.remove('open');
-  // Release URLs
-  S.draftPhotos.forEach(p => { if (p.url && !p.existing) URL.revokeObjectURL(p.url); });
+  // Release URLs — every draftPhoto in this sheet had its URL created here
+  // (for the thumbnail strip), regardless of whether the underlying photo
+  // already existed in the DB. The previous "!p.existing" guard was leaking
+  // the URLs of photos shown in the edit flow.
+  S.draftPhotos.forEach(p => { if (p.url) URL.revokeObjectURL(p.url); });
   S.draftPhotos = [];
   S.draft = null;
   setIdStatus(null);
