@@ -5106,7 +5106,11 @@ function updateExifStrip() {
         dragging: false, scrollWheelZoom: false, doubleClickZoom: false,
         boxZoom: false, keyboard: false, tap: false, touchZoom: false,
       }).setView([e.lat, e.lng], 13);
-      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 19, subdomains: 'abcd' }).addTo(_exifMapInstance);
+      const styleName = S.settings.mapStyle || 'dark';
+      const styleDef = TILE_STYLES[styleName] || TILE_STYLES.dark;
+      const opts = { maxZoom: styleDef.maxZoom };
+      if (styleDef.subdomains) opts.subdomains = styleDef.subdomains;
+      L.tileLayer(styleDef.url, opts).addTo(_exifMapInstance);
       // Tapping the preview opens the full pin sheet so user can adjust
       mapEl.addEventListener('click', () => { const b = $('#pinMapBtn'); if (b) b.click(); });
     } else {
@@ -9379,7 +9383,11 @@ function initDetMiniMap(lat, lng) {
       keyboard: false,
       tap: false
     }).setView([lat, lng], 13);
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 19, subdomains: 'abcd' }).addTo(detMiniMapInstance);
+    const styleName = S.settings.mapStyle || 'dark';
+    const styleDef = TILE_STYLES[styleName] || TILE_STYLES.dark;
+    const opts = { maxZoom: styleDef.maxZoom };
+    if (styleDef.subdomains) opts.subdomains = styleDef.subdomains;
+    L.tileLayer(styleDef.url, opts).addTo(detMiniMapInstance);
     const icon = L.divIcon({
       html: `<div class="fmkr" style="color:var(--green)"><div class="fmkr-dot">📍</div></div>`,
       className: 'fmkr-wrap', iconSize: [44, 44], iconAnchor: [22, 22]
@@ -9421,7 +9429,14 @@ async function openPinSheet() {
       zoom = 11;
     }
     pinMapInstance = L.map(el, { zoomControl: true, attributionControl: false }).setView(center, zoom);
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 19, subdomains: 'abcd' }).addTo(pinMapInstance);
+    // Mirror the user's chosen tile style on the main map so the pin sheet
+    // doesn't jarringly switch back to the dark default when they're using
+    // satellite or voyager.
+    const styleName = S.settings.mapStyle || 'dark';
+    const styleDef = TILE_STYLES[styleName] || TILE_STYLES.dark;
+    const opts = { maxZoom: styleDef.maxZoom };
+    if (styleDef.subdomains) opts.subdomains = styleDef.subdomains;
+    L.tileLayer(styleDef.url, opts).addTo(pinMapInstance);
     // If draft has a location, place marker
     if (S.draft?.location?.lat != null && S.draft.location.lng != null) {
       placePinMarker(S.draft.location.lat, S.draft.location.lng);
