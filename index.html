@@ -2161,6 +2161,64 @@ textarea.fld-in { resize: vertical; min-height: 60px; }
   animation: trailPrepSpin 0.7s linear infinite;
 }
 @keyframes trailPrepSpin { to { transform: rotate(360deg); } }
+
+/* ========== Trail vertex card (pops on each sighting hit) ========== */
+.trail-card {
+  position: absolute;
+  left: 12px; right: 12px;
+  bottom: calc(env(safe-area-inset-bottom) + 168px);
+  z-index: 50;
+  display: flex; align-items: center; gap: 10px;
+  background: linear-gradient(180deg, rgba(20,26,18,0.9), rgba(15,20,15,0.95));
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(52,211,153,0.28);
+  border-radius: 12px;
+  padding: 9px 12px 9px 9px;
+  opacity: 0;
+  transform: translateY(10px) scale(0.97);
+  transition: opacity 0.32s ease, transform 0.32s cubic-bezier(0.2,0.9,0.3,1.05);
+  pointer-events: none;
+  max-width: 480px; margin: 0 auto;
+  box-shadow: 0 12px 30px rgba(0,0,0,0.45);
+}
+.trail-card.on { opacity: 1; transform: translateY(0) scale(1); }
+.trail-card-img {
+  width: 52px; height: 52px;
+  border-radius: 10px;
+  background: var(--bg-card) center/cover no-repeat;
+  border: 1px solid rgba(255,255,255,0.06);
+  flex-shrink: 0;
+}
+.trail-card-body { flex: 1; min-width: 0; }
+.trail-card-name {
+  font-family: 'Fraunces', serif; font-style: italic;
+  font-size: 15px; font-weight: 500; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  line-height: 1.2;
+}
+.trail-card-meta {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px; color: var(--dim);
+  letter-spacing: 0.06em; text-transform: uppercase;
+  margin-top: 3px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.trail-card-badge {
+  background: var(--gold); color: var(--bg);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px; font-weight: 700;
+  letter-spacing: 0.12em;
+  padding: 5px 8px; border-radius: 6px;
+  display: none; flex-shrink: 0;
+  animation: trailCardBadge 0.5s cubic-bezier(0.2,0.9,0.3,1.05);
+}
+.trail-card.is-new .trail-card-badge { display: block; }
+@keyframes trailCardBadge {
+  0% { transform: scale(0.6) rotate(-8deg); opacity: 0; }
+  60% { transform: scale(1.12) rotate(2deg); opacity: 1; }
+  100% { transform: scale(1) rotate(0); }
+}
 .id-status-btn {
   margin-left: auto;
   background: var(--bg);
@@ -3403,6 +3461,14 @@ body:has(#vS.active) .fab { display: none; }
   <div class="trail-prep" id="trailPrep" aria-hidden="true">
     <div class="trail-prep-spinner"></div>
     <div class="trail-prep-text">Loading map…</div>
+  </div>
+  <div class="trail-card" id="trailCard" aria-hidden="true">
+    <div class="trail-card-img" id="trailCardImg"></div>
+    <div class="trail-card-body">
+      <div class="trail-card-name" id="trailCardName">—</div>
+      <div class="trail-card-meta" id="trailCardMeta"></div>
+    </div>
+    <div class="trail-card-badge" id="trailCardBadge">NEW</div>
   </div>
   <div class="trail-hud" id="trailHud" aria-hidden="true">
     <div class="trail-hud-row">
@@ -6427,6 +6493,7 @@ function cancelTrailAnim() {
   _mapSuspendRecluster = false;
   hideTrailHud();
   hideTrailPrep();
+  hideTrailCard();
 }
 
 // Force-load every tile that the camera is going to fly through. Without this,
@@ -6466,6 +6533,54 @@ function showTrailPrep() { const el = $('#trailPrep'); if (el) el.classList.add(
 function hideTrailPrep() { const el = $('#trailPrep'); if (el) el.classList.remove('on'); }
 function showTrailHud() { const el = $('#trailHud'); if (el) el.classList.add('on'); }
 function hideTrailHud() { const el = $('#trailHud'); if (el) el.classList.remove('on'); }
+
+// Vertex card — small panel that pops in with the entry's photo when the
+// trail head reaches a sighting. Auto-hides after a short window.
+let _trailCardUrl = null;
+let _trailCardTimer = null;
+async function showTrailCard(entry, isNew) {
+  if (!entry) return;
+  const card = $('#trailCard');
+  const img = $('#trailCardImg');
+  const name = $('#trailCardName');
+  const meta = $('#trailCardMeta');
+  if (!card || !img || !name || !meta) return;
+  clearTimeout(_trailCardTimer);
+  // Resolve display name + class emoji
+  const sp = entry.speciesId ? S.species.find(s => s.id === entry.speciesId) : null;
+  const cls = sp?.defaultClass || entry.className;
+  const clsDef = cls ? CLASSES_MAP[cls] : null;
+  name.textContent = sp?.commonName || sp?.scientific || 'Unidentified';
+  const time = entry.at ? new Date(entry.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
+  const place = [entry.location?.city, entry.location?.country].filter(Boolean).join(', ');
+  meta.textContent = [clsDef ? `${clsDef.emoji} ${clsDef.name}` : '', time, place].filter(Boolean).join(' · ');
+  card.classList.toggle('is-new', !!isNew);
+  // Photo (revoke previous URL)
+  if (_trailCardUrl) { URL.revokeObjectURL(_trailCardUrl); _trailCardUrl = null; }
+  img.style.backgroundImage = '';
+  const pid = entry.photoIds?.[0];
+  if (pid) {
+    DB.getPh(pid).then(photo => {
+      if (!photo) return;
+      const url = URL.createObjectURL(photo.blob);
+      _trailCardUrl = url;
+      img.style.backgroundImage = `url(${url})`;
+    }).catch(() => {});
+  }
+  card.classList.add('on');
+  _trailCardTimer = setTimeout(() => hideTrailCard(), 1700);
+}
+function hideTrailCard() {
+  const card = $('#trailCard');
+  if (!card) return;
+  card.classList.remove('on');
+  clearTimeout(_trailCardTimer);
+  _trailCardTimer = setTimeout(() => {
+    if (_trailCardUrl) { URL.revokeObjectURL(_trailCardUrl); _trailCardUrl = null; }
+    const img = $('#trailCardImg');
+    if (img) img.style.backgroundImage = '';
+  }, 400);
+}
 
 // Playback controls — speed multiplier compresses time for sleeps and the
 // per-frame animation step. Pause holds the segment progress at its current
@@ -6731,9 +6846,23 @@ async function drawTrail() {
       await sleep(550);
       if (el) el.style.opacity = '1';
       await sleep(180);
+      // The chapter's first entry is itself a sighting that hasn't been counted
+      // (segments only count their .to). Bump it now so the HUD reflects the
+      // new trip's opening stop and show its card.
+      const fromE = chapter.segs[0].fromEntry;
+      if (fromE) {
+        const wasNew = fromE.speciesId && !hudState.species.has(fromE.speciesId);
+        hudState.sightings += 1;
+        if (fromE.speciesId) hudState.species.add(fromE.speciesId);
+        updateTrailHud(hudState, fromE);
+        showTrailCard(fromE, wasNew);
+      }
+    } else if (ci === 0 && chapter.segs[0].fromEntry) {
+      // Opening shot — seed card with the very first sighting
+      showTrailCard(chapter.segs[0].fromEntry, false);
     }
     ringAt(chapter.segs[0].from);
-    if (chapter.segs[0].fromEntry) updateTrailHud(hudState, chapter.segs[0].fromEntry);
+    if (ci === 0 && chapter.segs[0].fromEntry) updateTrailHud(hudState, chapter.segs[0].fromEntry);
 
     for (let si = 0; si < chapter.segs.length; si++) {
       if (abortCtx.aborted) return;
@@ -6742,11 +6871,13 @@ async function drawTrail() {
       await animateSegment(seg, segBudget);
       if (abortCtx.aborted) return;
       ringAt(seg.to);
+      const wasNewSpecies = seg.toEntry?.speciesId && !hudState.species.has(seg.toEntry.speciesId);
       hudState.km += seg.dist;
       hudState.sightings += 1;
       if (seg.toEntry?.speciesId) hudState.species.add(seg.toEntry.speciesId);
       hudState.doneSegs += 1;
       updateTrailHud(hudState, seg.toEntry);
+      showTrailCard(seg.toEntry, wasNewSpecies);
       if (_trailSkipRequested) {
         // Draw remaining segments instantly so the user sees the full picture
         skipping = true;
@@ -6765,7 +6896,11 @@ async function drawTrail() {
             hudState.doneSegs += 1;
           }
         }
-        if (allSegs.length) updateTrailHud(hudState, allSegs[allSegs.length - 1].toEntry);
+        if (allSegs.length) {
+          const lastE = allSegs[allSegs.length - 1].toEntry;
+          updateTrailHud(hudState, lastE);
+          showTrailCard(lastE, false);
+        }
         break outer;
       }
       await sleep(Math.max(110, Math.min(280, segBudget * 0.13)));
