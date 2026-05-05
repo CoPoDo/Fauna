@@ -8036,7 +8036,19 @@ $('#wipeBtn').onclick = async () => {
   if (!confirm('Really? No undo.')) return;
   await DB.clearAll();
   S.entries = []; S.species = [];
-  S.settings = { apiKey: '', model: 'claude-haiku-4-5', autoId: true, haptics: true, locOn: true, lifeSort: 'recent', showTrail: false, trailColorMode: 'recency' };
+  // Defaults must mirror the S.settings init at the top so reset truly returns
+  // to first-run state — previously this was missing mapStyle, leaving the
+  // tile preference in a half-undefined state after a wipe.
+  S.settings = {
+    apiKey: '', model: 'claude-haiku-4-5', autoId: true, haptics: true,
+    locOn: true, lifeSort: 'recent', showTrail: false,
+    trailColorMode: 'recency', mapStyle: 'dark'
+  };
+  // Clear any in-memory map filters and dismiss the filter chip — otherwise
+  // it lingers visible against an empty map until the user re-enters the view.
+  S.mapSpeciesFilter = null;
+  S.filterClass = 'ALL';
+  $('#mapFilterChip')?.classList.remove('on');
   await saveSettings();
   $('#setSh').classList.remove('open');
   renderAll();
@@ -8464,6 +8476,10 @@ async function importBackup(file) {
     if (kvObj.settings) {
       S.settings = { ...S.settings, ...kvObj.settings };
     }
+    // Clear transient filters so the imported library shows in full
+    S.mapSpeciesFilter = null;
+    S.filterClass = 'ALL';
+    $('#mapFilterChip')?.classList.remove('on');
 
     S.entries = await DB.allE();
     S.species = await DB.allSp();
@@ -9083,6 +9099,12 @@ async function dexLogSighting() {
   updateExifStrip();
   setIdStatus('ident', `Scanned — confidence: ${r.confidence || 'unknown'}`, null);
   updateSaveState();
+  // Reset Scan state — the URL we just transferred to draftPhotos will be
+  // revoked when the add sheet closes (save or cancel), so leaving
+  // S.scanPhoto pointing at it would show a broken image on return.
+  S.scanState = 'ready';
+  S.scanResult = null;
+  S.scanPhoto = null;
 }
 
 // Ensure species get a dex number on save (backfill and new)
