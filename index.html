@@ -4320,26 +4320,37 @@ const DB = (() => {
     });
   }
   const tx = (store, mode = 'readonly') => db.transaction(store, mode).objectStore(store);
+  // Wrap an IDBRequest in a Promise that REJECTS on error. The previous
+  // helpers only attached onsuccess, so a quota-exceeded or constraint
+  // failure would leave the caller's await hanging forever instead of
+  // surfacing a useful error.
+  const req = r => new Promise((res, rej) => {
+    r.onsuccess = e => res(e.target.result);
+    r.onerror = e => rej(e.target.error || new Error('IndexedDB error'));
+  });
   return {
     init: open,
-    putE: e => new Promise(res => { const r = tx('entries', 'readwrite').put(e); r.onsuccess = res; }),
-    delE: id => new Promise(res => { const r = tx('entries', 'readwrite').delete(id); r.onsuccess = res; }),
-    getE: id => new Promise(res => { const r = tx('entries').get(id); r.onsuccess = e => res(e.target.result); }),
-    allE: () => new Promise(res => { const r = tx('entries').getAll(); r.onsuccess = e => res(e.target.result || []); }),
-    putSp: s => new Promise(res => { const r = tx('species', 'readwrite').put(s); r.onsuccess = res; }),
-    getSp: id => new Promise(res => { const r = tx('species').get(id); r.onsuccess = e => res(e.target.result); }),
-    allSp: () => new Promise(res => { const r = tx('species').getAll(); r.onsuccess = e => res(e.target.result || []); }),
-    delSp: id => new Promise(res => { const r = tx('species', 'readwrite').delete(id); r.onsuccess = res; }),
-    putPh: p => new Promise(res => { const r = tx('photos', 'readwrite').put(p); r.onsuccess = res; }),
-    getPh: id => new Promise(res => { const r = tx('photos').get(id); r.onsuccess = e => res(e.target.result); }),
-    delPh: id => new Promise(res => { const r = tx('photos', 'readwrite').delete(id); r.onsuccess = res; }),
-    allPh: () => new Promise(res => { const r = tx('photos').getAll(); r.onsuccess = e => res(e.target.result || []); }),
-    getKV: k => new Promise(res => { const r = tx('kv').get(k); r.onsuccess = e => res(e.target.result ? e.target.result.v : null); }),
-    putKV: (k, v) => new Promise(res => { const r = tx('kv', 'readwrite').put({ k, v }); r.onsuccess = res; }),
-    allKV: () => new Promise(res => { const r = tx('kv').getAll(); r.onsuccess = e => res(e.target.result || []); }),
+    putE: e => req(tx('entries', 'readwrite').put(e)),
+    delE: id => req(tx('entries', 'readwrite').delete(id)),
+    getE: id => req(tx('entries').get(id)),
+    allE: async () => (await req(tx('entries').getAll())) || [],
+    putSp: s => req(tx('species', 'readwrite').put(s)),
+    getSp: id => req(tx('species').get(id)),
+    allSp: async () => (await req(tx('species').getAll())) || [],
+    delSp: id => req(tx('species', 'readwrite').delete(id)),
+    putPh: p => req(tx('photos', 'readwrite').put(p)),
+    getPh: id => req(tx('photos').get(id)),
+    delPh: id => req(tx('photos', 'readwrite').delete(id)),
+    allPh: async () => (await req(tx('photos').getAll())) || [],
+    getKV: async k => {
+      const row = await req(tx('kv').get(k));
+      return row ? row.v : null;
+    },
+    putKV: (k, v) => req(tx('kv', 'readwrite').put({ k, v })),
+    allKV: async () => (await req(tx('kv').getAll())) || [],
     clearAll: async () => {
       const stores = ['entries', 'species', 'photos', 'kv'];
-      for (const s of stores) await new Promise(res => { const r = db.transaction(s, 'readwrite').objectStore(s).clear(); r.onsuccess = res; });
+      for (const s of stores) await req(db.transaction(s, 'readwrite').objectStore(s).clear());
     }
   };
 })();
