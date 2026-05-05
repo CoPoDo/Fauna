@@ -2189,7 +2189,25 @@ textarea.fld-in { resize: vertical; min-height: 60px; }
   max-width: 480px;
   margin: 0 auto;
 }
-.trail-hud.on { opacity: 1; transform: translateY(0); }
+.trail-hud.on { opacity: 1; transform: translateY(0); pointer-events: auto; }
+.trail-hud-close {
+  position: absolute;
+  top: 6px; right: 6px;
+  width: 22px; height: 22px;
+  border: 0;
+  background: rgba(255,255,255,0.04);
+  color: var(--dim);
+  border-radius: 50%;
+  font-family: inherit;
+  font-size: 16px; line-height: 1;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: background 0.15s, color 0.15s;
+  padding: 0;
+}
+.trail-hud-close:hover, .trail-hud-close:active {
+  background: rgba(255,255,255,0.1); color: var(--text);
+}
 .trail-hud-row {
   display: flex; align-items: baseline; justify-content: space-between;
   gap: 10px; margin-bottom: 8px;
@@ -3661,6 +3679,7 @@ body:has(#vS.active) .fab { display: none; }
     </div>
   </div>
   <div class="trail-hud" id="trailHud" aria-hidden="true">
+    <button class="trail-hud-close" id="trailHudClose" type="button" aria-label="Hide trail HUD">×</button>
     <div class="trail-hud-row">
       <div class="trail-hud-place">
         <span class="trail-hud-flag" id="trailHudFlag"></span>
@@ -8579,6 +8598,7 @@ $('#trailHudReplay').onclick = async () => {
   drawTrail();
 };
 $('#trailHudShare').onclick = () => { vibrate(6); shareJourneyText(); };
+$('#trailHudClose').onclick = () => { vibrate(4); hideTrailHud(); };
 
 document.addEventListener('keydown', ev => {
   if (ev.key !== 'Escape') return;
