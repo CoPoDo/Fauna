@@ -2219,6 +2219,39 @@ textarea.fld-in { resize: vertical; min-height: 60px; }
   60% { transform: scale(1.12) rotate(2deg); opacity: 1; }
   100% { transform: scale(1) rotate(0); }
 }
+
+/* ========== Trip-transition banner ========== */
+.trail-trip-banner {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%) scale(0.92);
+  z-index: 70;
+  background: linear-gradient(180deg, rgba(20,26,18,0.94), rgba(15,20,15,0.97));
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(212,165,116,0.32);
+  border-radius: 16px;
+  padding: 20px 28px;
+  display: flex; align-items: center; gap: 18px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.35s ease, transform 0.4s cubic-bezier(0.2,0.9,0.3,1.05);
+  box-shadow: 0 22px 60px rgba(0,0,0,0.6);
+  max-width: 92%;
+}
+.trail-trip-banner.on { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+.trail-trip-flag { font-size: 52px; line-height: 1; flex-shrink: 0; }
+.trail-trip-country {
+  font-family: 'Fraunces', serif; font-style: italic; font-weight: 500;
+  font-size: 22px; color: var(--text);
+  letter-spacing: -0.01em; line-height: 1.1;
+}
+.trail-trip-gap {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px; color: var(--gold);
+  letter-spacing: 0.12em; text-transform: uppercase;
+  margin-top: 6px;
+}
 .id-status-btn {
   margin-left: auto;
   background: var(--bg);
@@ -3469,6 +3502,13 @@ body:has(#vS.active) .fab { display: none; }
       <div class="trail-card-meta" id="trailCardMeta"></div>
     </div>
     <div class="trail-card-badge" id="trailCardBadge">NEW</div>
+  </div>
+  <div class="trail-trip-banner" id="trailTripBanner" aria-hidden="true">
+    <div class="trail-trip-flag" id="trailTripFlag"></div>
+    <div class="trail-trip-text">
+      <div class="trail-trip-country" id="trailTripCountry"></div>
+      <div class="trail-trip-gap" id="trailTripGap"></div>
+    </div>
   </div>
   <div class="trail-hud" id="trailHud" aria-hidden="true">
     <div class="trail-hud-row">
@@ -6494,6 +6534,7 @@ function cancelTrailAnim() {
   hideTrailHud();
   hideTrailPrep();
   hideTrailCard();
+  hideTripBanner();
 }
 
 // Force-load every tile that the camera is going to fly through. Without this,
@@ -6580,6 +6621,32 @@ function hideTrailCard() {
     const img = $('#trailCardImg');
     if (img) img.style.backgroundImage = '';
   }, 400);
+}
+
+// Trip-transition banner — shows during the fade between chapters.
+function formatTripGap(days) {
+  if (!Number.isFinite(days) || days < 1) return 'New chapter';
+  if (days < 2) return '1 day later';
+  if (days < 30) return `${Math.round(days)} days later`;
+  if (days < 60) return '1 month later';
+  if (days < 365) return `${Math.round(days/30)} months later`;
+  if (days < 730) return '1 year later';
+  return `${Math.round(days/365)} years later`;
+}
+function showTripBanner(country, cc, gapDays) {
+  const banner = $('#trailTripBanner');
+  if (!banner) return;
+  const flagEl = $('#trailTripFlag');
+  const countryEl = $('#trailTripCountry');
+  const gapEl = $('#trailTripGap');
+  flagEl.textContent = cc ? flag(cc) : '🌍';
+  countryEl.textContent = country || 'New place';
+  gapEl.textContent = formatTripGap(gapDays);
+  banner.classList.add('on');
+}
+function hideTripBanner() {
+  const banner = $('#trailTripBanner');
+  if (banner) banner.classList.remove('on');
 }
 
 // Playback controls — speed multiplier compresses time for sleeps and the
@@ -6853,20 +6920,39 @@ async function drawTrail() {
     if (skipping) break;
     const chapter = chapters[ci];
     if (ci > 0 && _trailHead) {
+      // Dotted line between previous trip's last point and this trip's start —
+      // shows the conceptual jump (you didn't drive there) without faking a route.
+      const prevChapter = chapters[ci - 1];
+      const prevLast = prevChapter.segs[prevChapter.segs.length - 1].to;
+      const nextFirst = chapter.segs[0].from;
+      L.polyline([prevLast, nextFirst], {
+        renderer: getTrailRenderer(),
+        color: '#d4a574', weight: 1.4, opacity: 0.45,
+        dashArray: '4 7', interactive: false, lineCap: 'round'
+      }).addTo(trailLayer);
+      // Banner: country + time-since-last-trip
+      const fromE = chapter.segs[0].fromEntry;
+      const prevLastEntry = prevChapter.segs[prevChapter.segs.length - 1].toEntry;
+      const gapDays = (prevLastEntry?.at && fromE?.at)
+        ? (fromE.at - prevLastEntry.at) / 86400000 : 0;
+      const countryName = fromE?.location?.country || fromE?.location?.city || 'New place';
+      const cc = fromE?.location?.cc || '';
+      showTripBanner(countryName, cc, gapDays);
       const el = _trailHead.getElement();
       if (el) { el.style.transition = 'opacity 0.3s'; el.style.opacity = '0'; }
-      await sleep(320);
+      await sleep(420);
       if (abortCtx.aborted) return;
       if (_trailSkipRequested) { skipping = true; }
       _trailHead.setLatLng(chapter.segs[0].from);
       if (!skipping) mapInstance.flyTo(chapter.segs[0].from, targetZoom, { duration: 0.9 });
-      await sleep(550);
+      await sleep(620);
+      // Banner has been on stage long enough — ease it out as the head fades back in
+      hideTripBanner();
       if (el) el.style.opacity = '1';
-      await sleep(180);
+      await sleep(220);
       // The chapter's first entry is itself a sighting that hasn't been counted
       // (segments only count their .to). Bump it now so the HUD reflects the
       // new trip's opening stop and show its card.
-      const fromE = chapter.segs[0].fromEntry;
       if (fromE) {
         const wasNew = fromE.speciesId && !hudState.species.has(fromE.speciesId);
         hudState.sightings += 1;
