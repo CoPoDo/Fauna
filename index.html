@@ -6888,10 +6888,27 @@ function cancelTrailAnim() {
 // animation ends up gliding over half-loaded grey checkerboard. Browser HTTP
 // cache handles the rest — once these <img> tags resolve, Leaflet's later
 // requests for the same URLs are instant.
+// Build a tile URL at an EXPLICIT zoom level, bypassing Leaflet's
+// getTileUrl — which (intentionally) substitutes the layer's current
+// _tileZoom for {z} in the URL template, so passing coords.z to it does
+// NOTHING. That broke our multi-zoom prewarm: every prefetch was
+// fetching tiles at whatever the map happened to be showing at the time,
+// not the target zoom we asked for.
+function _tileUrlForZoom(tileLayer, x, y, z) {
+  const opts = tileLayer.options || {};
+  const subs = opts.subdomains;
+  let s = '';
+  if (subs) {
+    const subList = typeof subs === 'string' ? subs.split('') : subs;
+    if (subList.length) s = subList[Math.abs(x + y) % subList.length];
+  }
+  const r = (typeof L !== 'undefined' && L.Browser && L.Browser.retina && opts.detectRetina !== false) ? '@2x' : '';
+  return L.Util.template(tileLayer._url, { s, x, y, z, r });
+}
 async function prewarmTiles(map, bounds, zoom, timeoutMs = 4500) {
   let tileLayer = null;
   map.eachLayer(l => { if (!tileLayer && l instanceof L.TileLayer) tileLayer = l; });
-  if (!tileLayer || !tileLayer.getTileUrl) return;
+  if (!tileLayer || !tileLayer._url) return;
   const nw = map.project(bounds.getNorthWest(), zoom).divideBy(256).floor();
   const se = map.project(bounds.getSouthEast(), zoom).divideBy(256).floor();
   const tiles = [];
@@ -6904,7 +6921,7 @@ async function prewarmTiles(map, bounds, zoom, timeoutMs = 4500) {
   await Promise.race([
     Promise.all(tiles.map(t => new Promise(resolve => {
       let url;
-      try { url = tileLayer.getTileUrl(t); } catch (e) { resolve(); return; }
+      try { url = _tileUrlForZoom(tileLayer, t.x, t.y, t.z); } catch (e) { resolve(); return; }
       if (!url) { resolve(); return; }
       const img = new Image();
       img.decoding = 'async';
