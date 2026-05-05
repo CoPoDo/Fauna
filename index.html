@@ -2342,7 +2342,20 @@ textarea.fld-in { resize: vertical; min-height: 60px; }
   display: none; flex-shrink: 0;
   animation: trailCardBadge 0.5s cubic-bezier(0.2,0.9,0.3,1.05);
 }
-.trail-card.is-new .trail-card-badge { display: block; }
+.trail-card.is-new .trail-card-badge,
+.trail-card.is-rare .trail-card-badge { display: block; }
+.trail-card.is-rare {
+  border-color: rgba(167,139,250,0.55);
+  box-shadow: 0 12px 30px rgba(0,0,0,0.45), 0 0 28px rgba(167,139,250,0.18);
+}
+.trail-card.is-rare .trail-card-img {
+  box-shadow: 0 0 14px rgba(167,139,250,0.55);
+}
+.trail-card.is-rare .trail-card-badge { background: #a78bfa; color: #1a1130; }
+.trail-card.is-new.is-rare .trail-card-badge {
+  background: linear-gradient(135deg, var(--gold) 0%, #a78bfa 100%);
+  color: var(--bg);
+}
 @keyframes trailCardBadge {
   0% { transform: scale(0.6) rotate(-8deg); opacity: 0; }
   60% { transform: scale(1.12) rotate(2deg); opacity: 1; }
@@ -6779,17 +6792,26 @@ async function showTrailCard(entry, isNew) {
   const img = $('#trailCardImg');
   const name = $('#trailCardName');
   const meta = $('#trailCardMeta');
+  const badge = $('#trailCardBadge');
   if (!card || !img || !name || !meta) return;
   clearTimeout(_trailCardTimer);
-  // Resolve display name + class emoji
+  // Resolve display name + class emoji + rarity
   const sp = entry.speciesId ? S.species.find(s => s.id === entry.speciesId) : null;
   const cls = sp?.defaultClass || entry.className;
   const clsDef = cls ? CLASSES_MAP[cls] : null;
+  const isRare = sp && (sp.rarity === 'rare' || sp.rarity === 'very-rare');
   name.textContent = sp?.commonName || sp?.scientific || 'Unidentified';
   const time = entry.at ? new Date(entry.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
   const place = [entry.location?.city, entry.location?.country].filter(Boolean).join(', ');
   meta.textContent = [clsDef ? `${clsDef.emoji} ${clsDef.name}` : '', time, place].filter(Boolean).join(' · ');
   card.classList.toggle('is-new', !!isNew);
+  card.classList.toggle('is-rare', !!isRare);
+  if (badge) {
+    badge.textContent = isNew && isRare ? 'NEW · RARE'
+      : isNew ? 'NEW'
+      : isRare ? 'RARE'
+      : '';
+  }
   // Photo (revoke previous URL)
   if (_trailCardUrl) { URL.revokeObjectURL(_trailCardUrl); _trailCardUrl = null; }
   img.style.backgroundImage = '';
@@ -7189,6 +7211,9 @@ async function drawTrail() {
       hudState.doneSegs += 1;
       updateTrailHud(hudState, seg.toEntry);
       showTrailCard(seg.toEntry, wasNewSpecies);
+      // Rare species earn a longer pause so the card has time to register
+      const arrivedSp = seg.toEntry?.speciesId ? S.species.find(s => s.id === seg.toEntry.speciesId) : null;
+      const arrivedRare = arrivedSp && (arrivedSp.rarity === 'rare' || arrivedSp.rarity === 'very-rare');
       if (_trailSkipRequested) {
         // Draw remaining segments instantly so the user sees the full picture
         skipping = true;
@@ -7220,7 +7245,8 @@ async function drawTrail() {
         }
         break outer;
       }
-      await sleep(Math.max(110, Math.min(280, segBudget * 0.13)));
+      const baseRest = Math.max(110, Math.min(280, segBudget * 0.13));
+      await sleep(arrivedRare ? baseRest + 380 : baseRest);
     }
   }
 
