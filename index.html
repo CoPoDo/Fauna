@@ -7258,36 +7258,31 @@ async function drawTrail() {
   };
 
   // === Pre-warm tiles at every zoom level the camera will actually visit ===
-  // The old code prewarmed one or two zooms across the WHOLE trail bounds,
-  // which left close-up segments (zoom 14+) with grey checkerboard during
-  // playback. Now we group segments by their target zoom and prewarm each
-  // group's local bounds at that zoom — and at the integer zooms straddling
-  // any fractional zoom, since zoomSnap: 0 means tiles for both neighbours
-  // can be visible mid-transition. All passes run in parallel so the
-  // total wait stays around one tile-fetch budget regardless of how many
-  // levels we cover.
+  // The camera transitions zoom continuously inside each segment (from the
+  // previous segment's framing zoom to this segment's framing zoom). That
+  // means tiles are needed at EVERY integer zoom level between the
+  // min and max segment zooms — not just the segment-target zooms.
+  // Old code only prewarmed the targets, so the screenshot showed a
+  // grey checkerboard mid-segment whenever the camera traversed an
+  // intermediate zoom that we hadn't covered.
   const allPts = allSegs.flatMap(s => [s.from, s.to]);
   const bounds = L.latLngBounds(allPts);
-  const zoomBuckets = new Map(); // integer zoom → array of segments
-  const addBucket = (z, seg) => {
-    if (!zoomBuckets.has(z)) zoomBuckets.set(z, []);
-    zoomBuckets.get(z).push(seg);
-  };
-  for (const s of allSegs) {
-    const sz = zoomForSegment(s);
-    // Cover both integer neighbours so fractional camera zoom transitions
-    // smoothly without falling between two un-loaded tile sets.
-    addBucket(Math.max(SEG_FRAME_MIN_ZOOM, Math.floor(sz)), s);
-    addBucket(Math.min(SEG_FRAME_MAX_ZOOM, Math.ceil(sz)), s);
-  }
-  // Compute an overview zoom for the closing reveal. Prewarm runs at FULL
-  // bounds for that zoom (the segment-bucket pass below would cover only
-  // tiles around segments themselves and leave gaps between them).
-  let overviewZoom = 8;
+
+  // Compute every zoom the camera will visit: each segment's framing zoom
+  // PLUS the opening flyTo's source (current map zoom) PLUS the closing
+  // reveal's target. Camera transitions through every integer zoom between
+  // these, so prewarm has to cover the whole range — otherwise
+  // mid-transition the user sees grey checkerboard at unprewarmed levels.
+  const segZooms = allSegs.map(zoomForSegment);
+  const segMinZ = Math.min(...segZooms);
+  const segMaxZ = Math.max(...segZooms);
+  const currentMapZ = mapInstance.getZoom();
+  let closingZ = 8;
   try {
-    overviewZoom = Math.max(SEG_FRAME_MIN_ZOOM, Math.min(SEG_FRAME_MAX_ZOOM, mapInstance.getBoundsZoom(bounds, false, SEG_FRAME_PAD)));
+    closingZ = Math.max(SEG_FRAME_MIN_ZOOM, Math.min(SEG_FRAME_MAX_ZOOM, mapInstance.getBoundsZoom(bounds, false, SEG_FRAME_PAD)));
   } catch (e) {}
-  const overviewZInt = Math.round(overviewZoom);
+  const minInt = Math.max(SEG_FRAME_MIN_ZOOM, Math.floor(Math.min(segMinZ, closingZ, currentMapZ)));
+  const maxInt = Math.min(Math.ceil(SEG_FRAME_MAX_ZOOM), Math.ceil(Math.max(segMaxZ, closingZ, currentMapZ)));
 
   showTrailPrep();
   const bailOnAbort = () => {
@@ -7299,18 +7294,24 @@ async function drawTrail() {
     if (_trailAnimAbort === abortCtx) _trailAnimAbort = null;
   };
 
+  // For each integer zoom in the visited range, fire a full-bounds prewarm
+  // (prewarmTiles bails internally if the tile count exceeds 800 — fine for
+  // most trails, bails harmlessly for continental ones at high zoom). PLUS
+  // for high zooms (>9) fire a segment-local prewarm so transitions involving
+  // close-up segments still have tiles when the full-bounds pass bails on
+  // big libraries. Both run in parallel; the browser cache dedupes
+  // overlapping URLs at no cost.
   const prewarmJobs = [];
-  // Always prewarm tiles for the closing reveal at FULL bounds.
-  prewarmJobs.push(prewarmTiles(mapInstance, bounds, overviewZInt, 4500));
-  // Plus per-zoom-bucket prewarms over only the segments that actually play
-  // at each zoom — keeps high-zoom prefetch bounded to where the camera
-  // will actually look.
-  for (const [zoom, segs] of zoomBuckets) {
-    if (!segs.length) continue;
-    const z = Math.round(zoom);
-    const pts = segs.flatMap(s => [s.from, s.to]);
-    const zb = L.latLngBounds(pts).pad(0.15);
-    prewarmJobs.push(prewarmTiles(mapInstance, zb, z, 4500));
+  for (let z = minInt; z <= maxInt; z++) {
+    prewarmJobs.push(prewarmTiles(mapInstance, bounds, z, 8000));
+    if (z > 9) {
+      const localSegs = allSegs.filter(s => Math.abs(zoomForSegment(s) - z) <= 2);
+      if (localSegs.length) {
+        const pts = localSegs.flatMap(s => [s.from, s.to]);
+        const zb = L.latLngBounds(pts).pad(0.2);
+        prewarmJobs.push(prewarmTiles(mapInstance, zb, z, 8000));
+      }
+    }
   }
   await Promise.all(prewarmJobs);
   if (abortCtx.aborted) { bailOnAbort(); return; }
