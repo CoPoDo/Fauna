@@ -6867,12 +6867,17 @@ let _trailAnimAbort = null;
 let _trailLiveLayer = null;
 let _trailHead = null;
 function cancelTrailAnim() {
+  // Track whether there was actually a live animation. If not (e.g. user
+  // tapped Replay during the 8s post-trail HUD linger), we don't want to
+  // hide the HUD here only for drawTrail to immediately re-show it — that
+  // causes a visible fade-out / fade-in cycle on the controls.
+  const hadActiveAnim = !!_trailAnimAbort;
   if (_trailAnimAbort) { _trailAnimAbort.aborted = true; _trailAnimAbort = null; }
   if (mapInstance && _trailHead) { try { mapInstance.removeLayer(_trailHead); } catch(e){} _trailHead = null; }
   if (mapInstance && _trailLiveLayer) { try { mapInstance.removeLayer(_trailLiveLayer); } catch(e){} _trailLiveLayer = null; }
   if (mapInstance && trailLayer) { try { mapInstance.removeLayer(trailLayer); } catch(e){} trailLayer = null; }
   _mapSuspendRecluster = false;
-  hideTrailHud();
+  if (hadActiveAnim) hideTrailHud();
   hideTrailPrep();
   hideTrailCard();
   hideTripBanner();
@@ -7156,6 +7161,9 @@ function _trailGiveUp(msg) {
   const tog = $('#trailToggle');
   if (tog) tog.classList.toggle('on', false);
   if (msg) toast(msg);
+  // If a previous trail playback had hidden cluster markers, bring them
+  // back so the static map isn't blank after the give-up message.
+  if (mapInstance && !markersLayer) renderMapMarkers();
 }
 
 async function drawTrail() {
