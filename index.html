@@ -5060,7 +5060,7 @@ function updateExifStrip() {
     parts.push(`<span><span class="k">Taken</span> <span class="v">${dateStr}, ${timeStr}</span></span>`);
   }
   if (e.model) {
-    parts.push(`<span><span class="k">Camera</span> <span class="v">${e.model}</span></span>`);
+    parts.push(`<span><span class="k">Camera</span> <span class="v">${esc(e.model)}</span></span>`);
   }
   if (Number.isFinite(e.lat) && Number.isFinite(e.lng)) {
     parts.push(`<span><span class="k">GPS</span> <span class="v">${e.lat.toFixed(4)}, ${e.lng.toFixed(4)}</span></span>`);
@@ -7817,7 +7817,7 @@ async function openDetail(id) {
     <div class="det-section">
       <div class="det-meta-row"><span class="k">When</span><span class="v">${fmtDate(e.at)}</span></div>
       ${loc && !Number.isFinite(e.location.lat) ? `<div class="det-meta-row"><span class="k">Where</span><span class="v">${flag(e.location.cc)} ${esc(loc)}</span></div>` : ''}
-      ${e.identifiedBy === 'ai' ? `<div class="det-meta-row"><span class="k">Identified by</span><span class="v">AI${e.aiConfidence ? ' · ' + e.aiConfidence + ' confidence' : ''}</span></div>` : ''}
+      ${e.identifiedBy === 'ai' ? `<div class="det-meta-row"><span class="k">Identified by</span><span class="v">AI${e.aiConfidence ? ' · ' + esc(e.aiConfidence) + ' confidence' : ''}</span></div>` : ''}
     </div>
     ${locSection}
     ${sp ? buildStatsSection(sp) : ''}
