@@ -7293,6 +7293,16 @@ async function drawTrail() {
   await Promise.all(prewarmJobs);
   if (abortCtx.aborted) { bailOnAbort(); return; }
   hideTrailPrep();
+  // Hide regular markers during trail playback. The trail head + animated
+  // polyline are the focus; cluster markers built at the map's pre-trail
+  // zoom would otherwise float at "stale" positions relative to the
+  // dynamically-zooming camera and visually fight the animation.
+  // renderMapMarkers() at the end of drawTrail rebuilds them at the final
+  // zoom for the reveal.
+  if (mapInstance && markersLayer) {
+    try { mapInstance.removeLayer(markersLayer); } catch (e) {}
+    markersLayer = null;
+  }
 
   // === Setup head marker ===
   const headIcon = L.divIcon({
@@ -7332,13 +7342,18 @@ async function drawTrail() {
       color: seg.color, weight: 3.4, opacity: 0.95,
       lineCap: 'round', lineJoin: 'round', interactive: false
     }).addTo(trailLayer);
-    const FOLLOW = 0.09;
-    // Look-ahead window: aim the camera slightly ahead of the head so the eye
-    // naturally tracks where the trail is going, not where it's been.
-    const LOOKAHEAD_MS = 180;
+    // Tighter follow constant so the head stays close to viewport centre
+    // throughout — at the previous 0.09 the camera was visibly lagging on
+    // short segments where there aren't enough frames for the lerp to
+    // converge. 0.18 reaches ~99% of head position over a 420ms minimum
+    // segment without feeling rigid.
+    const FOLLOW = 0.18;
+    // Smaller lookahead now that the camera tracks tightly — still enough
+    // to anticipate the head's direction without the camera shooting past.
+    const LOOKAHEAD_MS = 120;
     // Per-segment target zoom: tight close-ups for nearby stops, wide views
     // for cross-country jumps. Smoothly interpolates from the camera's
-    // current zoom over the segment's duration.
+    // current zoom over the first 60% of segment duration.
     const startZoom = mapInstance.getZoom();
     const targetSegZoom = zoomForSegment(seg);
     return new Promise(resolve => {
