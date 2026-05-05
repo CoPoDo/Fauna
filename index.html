@@ -1604,6 +1604,38 @@ body::before {
   font-size: 10px; line-height: 1;
 }
 
+/* Rarity-driven marker emphasis — rare and very-rare get extra glow,
+   very-rare slowly breathes so genuinely uncommon finds catch the eye. */
+.fmkr[data-rarity="rare"] .fmkr-dot,
+.fmkr[data-rarity="rare"] .fmkr-photo {
+  box-shadow: 0 0 14px rgba(0,0,0,0.65), 0 0 26px currentColor, 0 0 44px currentColor;
+}
+.fmkr[data-rarity="very-rare"] .fmkr-dot,
+.fmkr[data-rarity="very-rare"] .fmkr-photo {
+  animation: rareGlow 2.4s ease-in-out infinite;
+}
+@keyframes rareGlow {
+  0%, 100% { box-shadow: 0 0 16px rgba(0,0,0,0.65), 0 0 30px currentColor, 0 0 52px currentColor; }
+  50% { box-shadow: 0 0 22px rgba(0,0,0,0.65), 0 0 40px currentColor, 0 0 70px currentColor; }
+}
+
+/* Most-recent sighting gets a small gold star in the corner */
+.fmkr-latest {
+  position: absolute; top: -5px; left: -5px;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: var(--gold);
+  color: var(--bg);
+  font-size: 10px;
+  display: none;
+  align-items: center; justify-content: center;
+  border: 1.5px solid var(--bg);
+  box-shadow: 0 0 10px rgba(212,165,116,0.8);
+  font-weight: 700;
+  line-height: 1;
+}
+.fmkr.is-latest .fmkr-latest { display: flex; }
+
 /* You-are-here marker */
 .here-mkr-wrap { background: none !important; border: none !important; }
 .here-mkr {
@@ -7228,6 +7260,10 @@ function renderMapMarkers() {
   // Show photo thumbnails when zoomed in enough that they aren't crowding
   // each other. Below this, the emoji marker reads better at a glance.
   const useThumbs = zoom >= 13;
+  // Find the most recent sighting (across the entire library) so its marker
+  // can be flagged with a small gold star — gives a sense of "what's fresh"
+  // without requiring a dedicated "recent" filter.
+  const latestAt = S.entries.length ? Math.max(...S.entries.map(e => e.at || 0)) : 0;
   groups.forEach(g => {
     const count = g.entries.length;
     const clsCount = {};
@@ -7239,20 +7275,25 @@ function renderMapMarkers() {
     const clsDef = CLASSES_MAP[topClass] || CLASSES_MAP.other;
     const rarest = g.entries.map(e => S.species.find(s => s.id === e.speciesId)?.rarity).filter(Boolean).sort((a, b) => rarityRank(b) - rarityRank(a))[0];
     const color = rarest ? rarityColor(rarest) : '#d4a574';
+    const rarityAttr = rarest ? ` data-rarity="${esc(rarest)}"` : '';
+    const isLatest = latestAt && g.entries.some(e => e.at === latestAt);
+    const latestCls = isLatest ? ' is-latest' : '';
+    const latestStar = isLatest ? `<div class="fmkr-latest" title="Most recent sighting">★</div>` : '';
     // Pick the most recent photo at this location for the thumbnail
     const sortedByRecent = g.entries.slice().sort((a, b) => (b.at || 0) - (a.at || 0));
     const thumbId = useThumbs ? sortedByRecent.find(e => e.photoIds?.[0])?.photoIds?.[0] : null;
     let html;
     if (thumbId) {
-      html = `<div class="fmkr" style="color:${color}">
+      html = `<div class="fmkr${latestCls}" style="color:${color}"${rarityAttr}>
         <div class="fmkr-photo" data-thumb-id="${esc(thumbId)}">
           <div class="fmkr-img-inner"></div>
           <div class="fmkr-cls-badge">${clsDef.emoji}</div>
         </div>
         ${count > 1 ? `<div class="fmkr-count">${count}</div>` : ''}
+        ${latestStar}
       </div>`;
     } else {
-      html = `<div class="fmkr" style="color:${color}"><div class="fmkr-dot">${clsDef.emoji}</div>${count > 1 ? `<div class="fmkr-count">${count}</div>` : ''}</div>`;
+      html = `<div class="fmkr${latestCls}" style="color:${color}"${rarityAttr}><div class="fmkr-dot">${clsDef.emoji}</div>${count > 1 ? `<div class="fmkr-count">${count}</div>` : ''}${latestStar}</div>`;
     }
     const icon = L.divIcon({
       html, className: 'fmkr-wrap', iconSize: [44, 44], iconAnchor: [22, 22]
