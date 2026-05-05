@@ -4626,7 +4626,12 @@ async function resizeImage(file, maxDim = MAX_IMG_DIM) {
     canvas.width = w; canvas.height = h;
     const ctx = canvas.getContext('2d');
     ctx.drawImage(img, 0, 0, w, h);
-    return await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.85));
+    // canvas.toBlob can deliver null on some browsers when the canvas is
+    // tainted or memory-constrained; rejecting cleanly produces a useful
+    // toast instead of "URL.createObjectURL(null)" further down the chain.
+    return await new Promise((res, rej) => {
+      canvas.toBlob(b => b ? res(b) : rej(new Error('image encoding failed')), 'image/jpeg', 0.85);
+    });
   } finally {
     URL.revokeObjectURL(url);
   }
