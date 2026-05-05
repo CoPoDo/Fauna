@@ -7616,9 +7616,19 @@ function renderMap() {
   const rawBounds = L.latLngBounds(groups.map(g => [g.lat, g.lng]));
   _mapSuspendRecluster = true;
   renderMapMarkers();
+// When set before showV('Map'), renderMap zooms tight on this point instead
+// of fitting the full collection bounds. Consumed once per render so a
+// subsequent map open returns to the normal "fit all" behaviour.
+let _pendingMapFocus = null;
   setTimeout(() => {
     mapInstance.invalidateSize();
-    mapInstance.fitBounds(rawBounds, { padding: [60, 60], maxZoom: 13 });
+    if (_pendingMapFocus && Number.isFinite(_pendingMapFocus.lat) && Number.isFinite(_pendingMapFocus.lng)) {
+      const focus = _pendingMapFocus;
+      _pendingMapFocus = null;
+      mapInstance.flyTo([focus.lat, focus.lng], focus.zoom || 18, { duration: 0.8 });
+    } else {
+      mapInstance.fitBounds(rawBounds, { padding: [60, 60], maxZoom: 13 });
+    }
     setTimeout(() => { _mapSuspendRecluster = false; renderMapMarkers(); }, 350);
   }, 100);
 }
@@ -7873,13 +7883,12 @@ async function openDetail(id) {
       const mm = document.getElementById('detMiniMap');
       if (mm) {
         mm.onclick = () => {
+          // Stash the focus point so renderMap zooms tight on this exact spot
+          // instead of running its default "fit all markers" pass that would
+          // immediately yank the camera back out.
+          _pendingMapFocus = { lat: e.location.lat, lng: e.location.lng, zoom: 18 };
           closeDetailSheet();
-          setTimeout(() => {
-            showV('Map');
-            if (mapInstance && e.location.lat != null) {
-              mapInstance.flyTo([e.location.lat, e.location.lng], 15, { duration: 0.8 });
-            }
-          }, 220);
+          setTimeout(() => showV('Map'), 220);
         };
       }
     }, 120);
