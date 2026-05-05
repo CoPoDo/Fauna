@@ -1604,6 +1604,44 @@ body::before {
   font-size: 10px; line-height: 1;
 }
 
+/* Map species-filter chip — shown when the user long-presses a marker */
+.map-filter-chip {
+  position: absolute;
+  top: max(env(safe-area-inset-top), 14px);
+  left: 50%; transform: translateX(-50%);
+  z-index: 55;
+  background: linear-gradient(180deg, rgba(212,165,116,0.16), rgba(212,165,116,0.06));
+  border: 1px solid var(--gold);
+  border-radius: 20px;
+  padding: 6px 6px 6px 14px;
+  display: none;
+  align-items: center; gap: 8px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px; color: var(--text);
+  letter-spacing: 0.04em;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.5);
+  max-width: 80%;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.map-filter-chip.on { display: flex; }
+.map-filter-chip em {
+  color: var(--gold); font-style: italic; font-weight: 500;
+  font-family: 'Fraunces', serif; font-size: 13px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  max-width: 200px;
+}
+.map-filter-chip-clear {
+  background: var(--gold); color: var(--bg);
+  border: 0; border-radius: 50%;
+  width: 20px; height: 20px;
+  font-size: 14px; line-height: 1; cursor: pointer;
+  font-family: inherit; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+
 /* Rarity-driven marker emphasis — rare and very-rare get extra glow,
    very-rare slowly breathes so genuinely uncommon finds catch the eye. */
 .fmkr[data-rarity="rare"] .fmkr-dot,
@@ -3580,6 +3618,11 @@ body:has(#vS.active) .fab { display: none; }
   </div>
   <div class="map-empty" id="mapEmpty" style="display:none">
     <div><strong>No locations yet</strong><br>Add a sighting with a photo (GPS in EXIF) or enable location access</div>
+  </div>
+  <div class="map-filter-chip" id="mapFilterChip" aria-hidden="true">
+    <span>Showing only</span>
+    <em id="mapFilterChipName"></em>
+    <button class="map-filter-chip-clear" id="mapFilterChipClear" aria-label="Clear filter">×</button>
   </div>
   <div class="trail-prep" id="trailPrep" aria-hidden="true">
     <div class="trail-prep-spinner"></div>
@@ -6562,16 +6605,48 @@ function initMap() {
     if (!_mapSuspendRecluster) renderMapMarkers();
   });
 }
+function entryMatchesMapFilters(e) {
+  if (!entryMatchesClassFilter(e)) return false;
+  if (S.mapSpeciesFilter && e.speciesId !== S.mapSpeciesFilter) return false;
+  return true;
+}
 function buildMapGroups() {
   const groups = new Map();
   S.entries.forEach(e => {
-    if (!entryMatchesClassFilter(e)) return;
+    if (!entryMatchesMapFilters(e)) return;
     if (!e.location || !Number.isFinite(e.location.lat) || !Number.isFinite(e.location.lng)) return;
     const key = `${e.location.lat.toFixed(3)},${e.location.lng.toFixed(3)}`;
     if (!groups.has(key)) groups.set(key, { lat: e.location.lat, lng: e.location.lng, city: e.location.city || '', country: e.location.country || '', cc: e.location.cc || '', entries: [] });
     groups.get(key).entries.push(e);
   });
   return Array.from(groups.values());
+}
+
+function setMapSpeciesFilter(spId) {
+  S.mapSpeciesFilter = spId || null;
+  const chip = $('#mapFilterChip');
+  const nameEl = $('#mapFilterChipName');
+  if (spId) {
+    const sp = S.species.find(s => s.id === spId);
+    if (nameEl) nameEl.textContent = sp?.commonName || sp?.scientific || 'Selected species';
+    chip?.classList.add('on');
+  } else {
+    chip?.classList.remove('on');
+  }
+  // Re-render markers; if trail was on, redraw it too with the new filter
+  renderMapMarkers();
+  if (mapInstance && spId) {
+    // Frame the camera around the filtered markers so the user immediately
+    // sees the geographic spread of just this species.
+    const groups = buildMapGroups();
+    if (groups.length === 1) {
+      mapInstance.flyTo([groups[0].lat, groups[0].lng], Math.max(mapInstance.getZoom(), 13), { duration: 0.6 });
+    } else if (groups.length > 1) {
+      const b = L.latLngBounds(groups.map(g => [g.lat, g.lng]));
+      mapInstance.flyToBounds(b, { padding: [80, 80], duration: 0.7, maxZoom: 13 });
+    }
+  }
+  if (S.settings.showTrail) drawTrail();
 }
 
 // Pixel-space clustering — merges markers that would visually overlap at the
@@ -6856,7 +6931,7 @@ async function drawTrail() {
   const span = Math.max(1, tMax - tMin);
   const chapters = [];
   trips.forEach(trip => {
-    const ents = trip.entries.filter(e => entryMatchesClassFilter(e));
+    const ents = trip.entries.filter(e => entryMatchesMapFilters(e));
     if (ents.length < 2) return;
     const segs = [];
     for (let i = 1; i < ents.length; i++) {
@@ -7327,6 +7402,16 @@ function renderMapMarkers() {
       } else {
         openMapSheet(g);
       }
+    });
+    // Long-press / right-click → filter the map down to this species. Only
+    // fires when there's a single species at the marker (multi-species
+    // clusters don't have an obvious choice).
+    mk.on('contextmenu', ev => {
+      L.DomEvent.preventDefault(ev);
+      const speciesIds = [...new Set(g.entries.map(e => e.speciesId).filter(Boolean))];
+      if (speciesIds.length !== 1) return;
+      vibrate(10);
+      setMapSpeciesFilter(speciesIds[0]);
     });
   });
 }
@@ -8308,6 +8393,7 @@ $('#trailHudPause').onclick = () => { setTrailPaused(!_trailPaused); vibrate(4);
 $('#trailHudSpeed').onclick = () => { cycleTrailSpeed(); vibrate(4); };
 $('#trailHudSkip').onclick = () => { _trailSkipRequested = true; vibrate(6); };
 $('#trailHudMode').onclick = () => { cycleTrailColorMode(); vibrate(4); };
+$('#mapFilterChipClear').onclick = () => { setMapSpeciesFilter(null); vibrate(4); };
 $('#trailHudReplay').onclick = async () => {
   vibrate(8);
   S.settings.showTrail = true;
