@@ -8127,10 +8127,14 @@ async function exportBackup() {
     const blob = new Blob([json], { type: 'application/json' });
     const sizeMB = (blob.size / (1024 * 1024)).toFixed(1);
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
+    const dlUrl = URL.createObjectURL(blob);
+    a.href = dlUrl;
     a.download = 'fauna-backup-' + new Date().toISOString().slice(0,10) + '.json';
     a.click();
-    URL.revokeObjectURL(a.href);
+    // Defer revoke — Safari and some Android browsers can race on large
+    // downloads if the URL is freed before the browser finishes streaming
+    // the blob to disk.
+    setTimeout(() => URL.revokeObjectURL(dlUrl), 30000);
     const parts = [
       `${entries.length} sightings`,
       `${species.length} species`,
