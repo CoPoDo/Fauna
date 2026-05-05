@@ -7682,7 +7682,21 @@ function openMapSheet(group) {
 }
 
 // ===== Detail sheet =====
+// Object URLs created by the most recent openDetail. Revoked at the start of
+// the next open and on sheet-close so the detail view can't accumulate dozens
+// of leaked blob references over a long session.
+let _detPhotoUrls = [];
+function revokeDetPhotoUrls() {
+  for (const u of _detPhotoUrls) { try { URL.revokeObjectURL(u); } catch (e) {} }
+  _detPhotoUrls = [];
+}
+function closeDetailSheet() {
+  $('#detSh').classList.remove('open');
+  destroyDetMiniMap();
+  revokeDetPhotoUrls();
+}
 async function openDetail(id) {
+  revokeDetPhotoUrls();
   const e = await DB.getE(id);
   if (!e) return;
   S.activeDetailId = id;
@@ -7695,7 +7709,11 @@ async function openDetail(id) {
   const photos = [];
   for (const pid of e.photoIds || []) {
     const p = await DB.getPh(pid);
-    if (p) photos.push({ id: pid, url: URL.createObjectURL(p.blob) });
+    if (p) {
+      const url = URL.createObjectURL(p.blob);
+      _detPhotoUrls.push(url);
+      photos.push({ id: pid, url });
+    }
   }
 
   let hero = '';
@@ -7783,8 +7801,7 @@ async function openDetail(id) {
       const mm = document.getElementById('detMiniMap');
       if (mm) {
         mm.onclick = () => {
-          $('#detSh').classList.remove('open');
-          destroyDetMiniMap();
+          closeDetailSheet();
           setTimeout(() => {
             showV('Map');
             if (mapInstance && e.location.lat != null) {
@@ -8466,14 +8483,13 @@ $('#whenNowBtn').onclick = () => {
   delete $('#inWhen').dataset.auto;
 };
 
-$('#detSh').onclick = ev => { if (ev.target === $('#detSh')) { $('#detSh').classList.remove('open'); destroyDetMiniMap(); } };
 $$('#detSh [data-det]').forEach(b => {
   b.onclick = async () => {
     const id = S.activeDetailId;
     const e = S.entries.find(x => x.id === id);
     if (!e) return;
     if (b.dataset.det === 'edit') {
-      $('#detSh').classList.remove('open');
+      closeDetailSheet();
       setTimeout(() => openAddSheet(e), 220);
     } else if (b.dataset.det === 'delete') {
       // Snapshot for undo, then optimistically remove from memory so the UI
@@ -8492,8 +8508,7 @@ $$('#detSh [data-det]').forEach(b => {
       S.entries = S.entries.filter(x => x.id !== e.id);
       if (speciesSnap) S.species = S.species.filter(s => s.id !== speciesSnap.id);
       await assignDexNumbers();
-      $('#detSh').classList.remove('open');
-      destroyDetMiniMap();
+      closeDetailSheet();
       renderAll();
       vibrate(8);
       let undone = false;
@@ -8515,9 +8530,9 @@ $$('#detSh [data-det]').forEach(b => {
   };
 });
 
-$('#detClose').onclick = () => { $('#detSh').classList.remove('open'); destroyDetMiniMap(); };
-$('#detCloseBottom').onclick = () => { $('#detSh').classList.remove('open'); destroyDetMiniMap(); };
-$('#detSh').onclick = ev => { if (ev.target === $('#detSh')) { $('#detSh').classList.remove('open'); destroyDetMiniMap(); } };
+$('#detClose').onclick = closeDetailSheet;
+$('#detCloseBottom').onclick = closeDetailSheet;
+$('#detSh').onclick = ev => { if (ev.target === $('#detSh')) closeDetailSheet(); };
 
 $('#spClose').onclick = () => $('#spSh').classList.remove('open');
 $('#spCloseBottom').onclick = () => $('#spSh').classList.remove('open');
@@ -8659,7 +8674,7 @@ document.addEventListener('keydown', ev => {
   else if ($('#sortSh').classList.contains('open')) $('#sortSh').classList.remove('open');
   else if ($('#pinSh').classList.contains('open')) closePinSheet();
   else if ($('#addSh').classList.contains('open')) closeAddSheet();
-  else if ($('#detSh').classList.contains('open')) { $('#detSh').classList.remove('open'); destroyDetMiniMap(); }
+  else if ($('#detSh').classList.contains('open')) closeDetailSheet();
   else if ($('#spSh').classList.contains('open')) $('#spSh').classList.remove('open');
   else if ($('#setSh').classList.contains('open')) $('#setSh').classList.remove('open');
   else if ($('#mapSh').classList.contains('open')) $('#mapSh').classList.remove('open');
