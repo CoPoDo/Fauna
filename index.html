@@ -7438,10 +7438,10 @@ async function drawTrail() {
   updateTrailHud(hudState, allSegs[0].fromEntry);
 
   _mapSuspendRecluster = true;
-  // Open by framing the entire first chapter — every segment in that chapter
-  // plays at this same zoom, so panning is smooth and zoom never changes
-  // mid-trip. This is what eliminates the white-flash/slingshot problems.
-  mapInstance.flyToBounds(chapters[0].bounds, {
+  // Open zoomed in on where the journey starts, not the whole chapter.
+  // The camera then pans smoothly following the head; segZoom is captured
+  // after this lands, so zoom stays constant (no tile grid flush / no flash).
+  mapInstance.flyToBounds(L.latLngBounds([allSegs[0].from, allSegs[0].to]), {
     padding: SEG_FRAME_PAD, duration: 0.8, maxZoom: SEG_FRAME_MAX_ZOOM
   });
   // Wait for the flyTo to land before starting the animation; otherwise the
