@@ -7319,6 +7319,8 @@ async function drawTrail() {
     const pts = c.segs.flatMap(s => [s.from, s.to]);
     c.bounds = L.latLngBounds(pts);
     c.zoom = zoomForBounds(c.bounds);
+    c.firstSegBounds = L.latLngBounds([c.segs[0].from, c.segs[0].to]);
+    c.firstSegZoom = zoomForBounds(c.firstSegBounds);
   });
   const allPts = allSegs.flatMap(s => [s.from, s.to]);
   const bounds = L.latLngBounds(allPts);
@@ -7336,9 +7338,15 @@ async function drawTrail() {
 
   // One prewarm per chapter zoom + one for the closing reveal. Far fewer jobs
   // than per-segment prewarm, so the loading indicator clears much faster.
+  // Also prewarm the first-segment zoom for each chapter: ch.zoom covers the
+  // establishing-shot flyTo, but ch.firstSegZoom covers the opening tight-zoom
+  // (chapter 0) and any future tight-open transition. Runs in parallel so it's free.
   const prewarmJobs = [];
   for (const ch of chapters) {
     prewarmJobs.push(prewarmTiles(mapInstance, ch.bounds, Math.round(ch.zoom), 6000));
+    if (Math.round(ch.firstSegZoom) !== Math.round(ch.zoom)) {
+      prewarmJobs.push(prewarmTiles(mapInstance, ch.firstSegBounds, Math.round(ch.firstSegZoom), 6000));
+    }
   }
   prewarmJobs.push(prewarmTiles(mapInstance, bounds, Math.round(finalZoom), 6000));
   await Promise.all(prewarmJobs);
