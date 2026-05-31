@@ -3928,8 +3928,9 @@ body:has(#vS.active) .fab { display: none; }
     <div class="fld">
       <div class="fld-lbl">Model</div>
       <select class="fld-in" id="modelIn">
-        <option value="claude-haiku-4-5">Haiku 4.5 — fast & cheap (recommended)</option>
-        <option value="claude-sonnet-4-5">Sonnet 4.5 — better for tough IDs (3× cost)</option>
+        <option value="claude-opus-4-8">Opus 4.8 — best accuracy (recommended)</option>
+        <option value="claude-sonnet-4-6">Sonnet 4.6 — strong & balanced (~⅓ cost)</option>
+        <option value="claude-haiku-4-5">Haiku 4.5 — fast & cheap (~1/15 cost)</option>
       </select>
     </div>
 
@@ -4266,7 +4267,11 @@ const CHIP_INFO = {
   }
 };
 
-const MAX_IMG_DIM = 1024;
+// 1568px is Claude's vision sweet spot (the API downscales larger images to
+// fit ~1.15MP anyway). Sending at this size — instead of the old 1024 — keeps
+// fine diagnostic detail (insect setae, leaf venation, fur banding) that small
+// or distant subjects depend on for a correct ID.
+const MAX_IMG_DIM = 1568;
 
 const $ = sel => document.querySelector(sel);
 const $$ = sel => document.querySelectorAll(sel);
@@ -4277,7 +4282,7 @@ const S = {
   species: [],       // { id, commonName, scientific, rarity, danger, fieldNote, defaultClass, taxonomy }
   settings: {
     apiKey: '',
-    model: 'claude-haiku-4-5',
+    model: 'claude-opus-4-8',
     autoId: true,
     haptics: true,
     locOn: true,
@@ -4645,7 +4650,7 @@ async function resizeImage(file, maxDim = MAX_IMG_DIM) {
     // tainted or memory-constrained; rejecting cleanly produces a useful
     // toast instead of "URL.createObjectURL(null)" further down the chain.
     return await new Promise((res, rej) => {
-      canvas.toBlob(b => b ? res(b) : rej(new Error('image encoding failed')), 'image/jpeg', 0.85);
+      canvas.toBlob(b => b ? res(b) : rej(new Error('image encoding failed')), 'image/jpeg', 0.9);
     });
   } finally {
     URL.revokeObjectURL(url);
@@ -4721,12 +4726,15 @@ Return valid JSON only — no markdown fences, no commentary.`;
 const SCAN_PROMPT = `You are an expert naturalist identifying the living thing in this photo. Consider distinguishing features carefully — color, shape, size, pose, substrate, setting. If the context includes a specific location or date, use them aggressively to narrow the candidate list — a "brown bird" in central Thailand in April has a very different candidate set than one in Norway in November.
 
 IDENTIFICATION RULES:
+- Work through the visible evidence FIRST (in the "observations" field) before committing to a name — note diagnostic features (markings, body proportions, leg/eye arrangement, venation, leaf shape, bark, etc.), then reason to the most likely taxon. This step-by-step approach is mandatory and improves accuracy.
+- Do NOT anchor on the first plausible species. Briefly consider the closest look-alikes and pick the one whose features best match; if two are equally likely, drop to genus level rather than guessing the wrong species.
 - Always provide your best guess. If uncertain at species level, fall back to genus ('Heteropoda sp.') — never leave commonName empty.
 - Pick the MOST SPECIFIC class — only use 'other' when the subject genuinely doesn't fit any category (e.g. slime mold, lichen). Anything with visible eyes, legs, wings, scales, feathers, fur, or fins is an animal class (arachnid/insect/reptile/mammal/bird/amphibian/fish/crustacean/mollusc). Plants belong in plant/tree/flower.
-- Set confidence honestly: 'high' only if you're sure; 'medium' for a reasonable guess; 'low' for blurry, partial, or ambiguous photos.
+- Set confidence honestly: 'high' only when diagnostic features are clearly visible and unambiguous; 'medium' for a reasonable guess; 'low' for blurry, partial, distant, or ambiguous photos. A confident species-level ID requires features that actually rule out look-alikes — otherwise stay at genus and mark medium/low.
 
 Return a detailed Pokédex-style profile as JSON ONLY, no prose:
 {
+  "observations": "string — FIRST, 1-3 sentences describing the key diagnostic features you actually see and how they point to the ID. This is your reasoning; do it before naming the subject.",
   "commonName": "string — required, never empty",
   "scientific": "string — binomial if possible, else 'Genus sp.'",
   "classification": "short descriptor in the pokédex-entry style, e.g. 'The Huntsman Spider' or 'Tropical Shade Tree' or 'Tufted Grassland Fungus'",
@@ -4758,6 +4766,14 @@ Return a detailed Pokédex-style profile as JSON ONLY, no prose:
 }
 Be accurate — these are REAL stats about real species, not game stats. Return JSON only, no markdown fences.`;
 
+function modelLabel(id) {
+  if (!id) return 'Opus 4.8';
+  if (id.includes('opus')) return 'Opus 4.8';
+  if (id.includes('sonnet')) return 'Sonnet 4.6';
+  if (id.includes('haiku')) return 'Haiku 4.5';
+  return id;
+}
+
 function buildContextPrompt(ctx) {
   if (!ctx) return '';
   const bits = [];
@@ -4775,11 +4791,22 @@ function buildContextPrompt(ctx) {
   return `CONTEXT FOR IDENTIFICATION: ${bits.join(' ')} Use this location and season aggressively to narrow the species — it dramatically improves regional/seasonal ID accuracy.\n\n`;
 }
 
-async function aiScan(blob, context) {
+async function aiScan(blobs, context) {
   if (!S.settings.apiKey) throw new Error('No API key set');
-  const base64 = await blobToBase64(blob);
-  const mimeType = blob.type || 'image/jpeg';
-  const promptText = buildContextPrompt(context) + SCAN_PROMPT;
+  // Accept either a single blob or an array of photos of the SAME subject.
+  // Feeding multiple angles to the model is the single biggest accuracy win
+  // for hard IDs (spiders, LBJs, juveniles) — it can cross-check features.
+  const blobArr = (Array.isArray(blobs) ? blobs : [blobs]).filter(Boolean);
+  if (!blobArr.length) throw new Error('No photo to identify');
+  const imageBlocks = [];
+  for (const b of blobArr.slice(0, 4)) { // cap at 4 to bound cost/latency
+    const base64 = await blobToBase64(b);
+    imageBlocks.push({ type: 'image', source: { type: 'base64', media_type: b.type || 'image/jpeg', data: base64 } });
+  }
+  const multiNote = imageBlocks.length > 1
+    ? `These ${imageBlocks.length} photos all show the SAME individual from different angles/distances — combine the evidence across all of them into ONE identification.\n\n`
+    : '';
+  const promptText = buildContextPrompt(context) + multiNote + SCAN_PROMPT;
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -4790,11 +4817,11 @@ async function aiScan(blob, context) {
     },
     body: JSON.stringify({
       model: S.settings.model,
-      max_tokens: 1800,
+      max_tokens: 2200,
       messages: [{
         role: 'user',
         content: [
-          { type: 'image', source: { type: 'base64', media_type: mimeType, data: base64 } },
+          ...imageBlocks,
           { type: 'text', text: promptText }
         ]
       }]
@@ -5162,7 +5189,7 @@ async function runAiIdentify() {
       placeName: [S.draft?.location?.city, S.draft?.location?.country].filter(Boolean).join(', ') || null,
       at: photo.exif?.at || (S.draft?.id ? null : Date.now())
     };
-    const result = await aiIdentify(photo.blob, ctx);
+    const result = await aiIdentify(S.draftPhotos.map(p => p.blob), ctx);
     // Sheet may have been closed during the API call — bail rather than
     // throwing on a null S.draft mutation.
     if (!S.draft) return;
@@ -6286,8 +6313,12 @@ async function drainPendingAI() {
   let processed = 0;
   try {
     for (const e of pending) {
-      const ph = await DB.getPh(e.photoIds[0]);
-      if (!ph) { e.pendingAI = false; await DB.putE(e); continue; }
+      const phs = [];
+      for (const pid of (e.photoIds || [])) {
+        const p = await DB.getPh(pid);
+        if (p?.blob) phs.push(p.blob);
+      }
+      if (!phs.length) { e.pendingAI = false; await DB.putE(e); continue; }
       try {
         const ctx = {
           lat: e.location?.lat,
@@ -6295,7 +6326,7 @@ async function drainPendingAI() {
           placeName: [e.location?.city, e.location?.country].filter(Boolean).join(', ') || null,
           at: e.at
         };
-        const result = await aiScan(ph.blob, ctx);
+        const result = await aiScan(phs, ctx);
         const ok = await applyAiResultToEntry(e, result);
         if (ok) processed++;
       } catch (err) {
@@ -8181,7 +8212,7 @@ async function openSpeciesSheet(spId) {
 async function saveSettings() { await DB.putKV('settings', S.settings); }
 function openSettings() {
   $('#apiKeyIn').value = S.settings.apiKey || '';
-  $('#modelIn').value = S.settings.model || 'claude-haiku-4-5';
+  $('#modelIn').value = S.settings.model || 'claude-opus-4-8';
   $$('#setSh .sw').forEach(sw => sw.classList.toggle('on', !!S.settings[sw.dataset.tog]));
   $('#setSh').classList.add('open');
 }
@@ -8240,7 +8271,7 @@ $('#wipeBtn').onclick = async () => {
   // to first-run state — previously this was missing mapStyle, leaving the
   // tile preference in a half-undefined state after a wipe.
   S.settings = {
-    apiKey: '', model: 'claude-haiku-4-5', autoId: true, haptics: true,
+    apiKey: '', model: 'claude-opus-4-8', autoId: true, haptics: true,
     locOn: true, lifeSort: 'recent', showTrail: false,
     trailColorMode: 'recency', mapStyle: 'dark'
   };
@@ -8967,7 +8998,7 @@ function renderScan() {
             <span>What's around me</span>
           </button>
         </div>
-        <div class="dex-empty-help">${S.settings.apiKey ? 'Ready · using ' + (S.settings.model.includes('sonnet') ? 'Sonnet 4.5' : 'Haiku 4.5') : 'Add API key in settings first'}</div>
+        <div class="dex-empty-help">${S.settings.apiKey ? 'Ready · using ' + modelLabel(S.settings.model) : 'Add API key in settings first'}</div>
       </div>
     `;
     $('#dexScanCam').onclick = () => startScan('cam');
@@ -9651,6 +9682,15 @@ async function init() {
   await DB.init();
   const saved = await DB.getKV('settings');
   if (saved) S.settings = { ...S.settings, ...saved };
+  // One-time model migration: legacy installs stored 'claude-haiku-4-5' /
+  // 'claude-sonnet-4-5'. Upgrade everyone to Opus 4.8 once for best ID
+  // accuracy, then never touch it again so a later deliberate pick sticks.
+  if (!S.settings.modelMigratedV2) {
+    const VALID = ['claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5'];
+    if (!VALID.includes(S.settings.model)) S.settings.model = 'claude-opus-4-8';
+    S.settings.modelMigratedV2 = true;
+    await saveSettings();
+  }
   S.entries = await DB.allE();
   S.species = await DB.allSp();
   await assignDexNumbers();
